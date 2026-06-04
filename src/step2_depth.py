@@ -29,6 +29,9 @@ depth_map = depth_map.cpu().numpy()
 depth_normalized = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min())
 depth_normalized = (depth_normalized * 255).astype(np.uint8)
 
+np.save("depth_map.npy", depth_map)
+print("Saved depth_map.npy")
+
 plt.figure(figsize=(12, 5))
 plt.subplot(1, 2, 1); plt.imshow(image);                    plt.title("Input"); plt.axis("off")
 plt.subplot(1, 2, 2); plt.imshow(depth_normalized, cmap="inferno"); plt.title("Depth"); plt.axis("off")
