@@ -16,9 +16,14 @@ model.eval()
 print("Qwen3-VL model loaded.")
 image_path = "test.png"
 
-user_prompt = """List all distinct objects visible in this image. 
-Output ONLY a simple comma-separated list of object names. 
-Be concise. No explanations."""
+user_prompt = user_prompt = """Look at this image carefully. List only the objects you can CLEARLY see.
+Rules:
+- Maximum 10 objects
+- Only real, distinct objects visible in the image
+- No sub-parts of objects (e.g. just "train" not "train wheel", "train door")
+- No groups of objects, give me just individual objects (e.g. just "dog plushie" not "stuffed animals")
+- No guesses — only what you can clearly see
+- Output ONLY a comma-separated list, nothing else"""
 
 messages = [
     {
