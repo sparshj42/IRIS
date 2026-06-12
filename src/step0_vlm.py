@@ -1,9 +1,15 @@
+import argparse
 import torch
 import re
 from PIL import Image
 from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 
-model_id = "Qwen/Qwen3-VL-8B-Instruct"  
+parser = argparse.ArgumentParser()
+parser.add_argument("--image", default="test.png")
+parser.add_argument("--out", default="detected_objects.txt")
+args = parser.parse_args()
+
+model_id = "Qwen/Qwen3-VL-8B-Instruct"
 
 processor = AutoProcessor.from_pretrained(model_id)
 model = Qwen3VLForConditionalGeneration.from_pretrained(
@@ -14,16 +20,19 @@ model = Qwen3VLForConditionalGeneration.from_pretrained(
 model.eval()
 
 print("Qwen3-VL model loaded.")
-image_path = "test.png"
+image_path = args.image
 
-user_prompt = user_prompt = """Look at this image carefully. List only the objects you can CLEARLY see.
+user_prompt = """List every distinct movable object you can CLEARLY see in this image.
 Rules:
-- Maximum 10 objects
-- Only real, distinct objects visible in the image
-- No sub-parts of objects (e.g. just "train" not "train wheel", "train door")
-- No groups of objects, give me just individual objects (e.g. just "dog plushie" not "stuffed animals")
-- No guesses — only what you can clearly see
-- Output ONLY a comma-separated list, nothing else"""
+- Use a DESCRIPTIVE name: colour + object type, 2-3 words, always SINGULAR.
+  Good: "orange bucket", "white chair", "wooden shelf". Bad: "bucket", "chairs", "toy".
+- Name specific object types, never the generic word "toy": say "toy block", "toy dinosaur", "stuffed animal".
+- If several similar objects are visible, repeat the name once per instance: ["white chair", "white chair"]
+- No brand names or text written on objects
+- No parts of objects (no "table leg"), no fixed room structure (no wall, floor, ceiling, window, door, mounted shelf)
+- Only objects you can clearly and fully identify. Never guess.
+- Maximum 12 entries
+- Output ONLY a JSON array of strings, nothing else. Example: ["white chair", "white chair", "white table"]"""
 
 messages = [
     {
@@ -74,22 +83,23 @@ print("="*60)
 print(response)
 print("="*60)
 
-numbered_pattern = r'\d+\.\s*([^,\n]+)'
-matches = re.findall(numbered_pattern, response)
-
-if matches:
-    object_names = [m.strip() for m in matches]
-else:
-    object_names = [obj.strip() for obj in response.split(",") if obj.strip()]
+import json
+try:
+    m = re.search(r"\[.*\]", response, re.DOTALL)
+    parsed = json.loads(m.group(0)) if m else []
+    object_names = [str(o).strip().lower() for o in parsed if str(o).strip()]
+except (ValueError, AttributeError):
+    object_names = [obj.strip().lower() for obj in response.split(",") if obj.strip()]
 
 object_names = [re.sub(r'\s*\([^)]*\)', '', obj).strip() for obj in object_names]
+object_names = list(dict.fromkeys(object_names))  # de-dup; instances recovered by detector
 
-print(f"\nExtracted {len(object_names)} objects:")
+print(f"\nExtracted {len(object_names)} object types:")
 for i, obj in enumerate(object_names, 1):
     print(f"  {i}. {obj}")
 
-with open("detected_objects.txt", "w") as f:
+with open(args.out, "w") as f:
     for obj in object_names:
         f.write(obj + "\n")
 
-print("\nSaved to detected_objects.txt")
+print(f"\nSaved to {args.out}")

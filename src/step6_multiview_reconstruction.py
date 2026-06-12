@@ -63,9 +63,21 @@ if __name__ == "__main__":
 
     model, device, dtype = load_vggt()
 
-    scene_pointcloud = synthetic_views_to_pointcloud(model, device, dtype, image_paths)
+    # Run VGGT once, keep full point maps for downstream registration/labeling
+    images = load_and_preprocess_images(image_paths).to(device, dtype=dtype)
+    with torch.no_grad():
+        predictions = model(images)
+
+    world_points = predictions["world_points"].squeeze(0).cpu().float().numpy()  # (V, H, W, 3)
+    conf = predictions["world_points_conf"].squeeze(0).cpu().float().numpy()     # (V, H, W)
+
+    scene_pointcloud = world_points[conf > 0.5]
 
     # Save
     os.makedirs("output", exist_ok=True)
     np.save("output/scene_pointcloud.npy", scene_pointcloud)
+    np.savez_compressed("output/vggt_pointmaps.npz",
+                        world_points=world_points, conf=conf,
+                        view_paths=np.array(image_paths))
     print(f"Saved scene point cloud: {scene_pointcloud.shape}")
+    print(f"Saved point maps: output/vggt_pointmaps.npz {world_points.shape}")

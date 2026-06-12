@@ -1,0 +1,64 @@
+#!/bin/bash
+# ============================================================================
+# IRIS reproducible setup — creates the conda envs and clones the third-party
+# model repos. Portable: uses conda env NAMES (no hardcoded home paths).
+#
+#   bash scripts/setup_envs.sh            # both envs
+#   bash scripts/setup_envs.sh iris       # just the main env
+#   bash scripts/setup_envs.sh trellis    # just the TRELLIS env (+ repo)
+#
+# After this: python scripts/fetch_weights.py   (downloads RORem)
+# ============================================================================
+set -e
+cd "$(dirname "$0")/.."
+REPO="$PWD"
+WHAT="${1:-all}"
+pipx() { PYTHONNOUSERSITE=1 conda run -n "$1" pip install "${@:2}"; }
+
+# ---------------------------------------------------------------- main: iris
+if [ "$WHAT" = all ] || [ "$WHAT" = iris ]; then
+  echo ">>> [iris] main pipeline env"
+  conda create -n iris python=3.10 -y
+  pipx iris torch==2.5.1 torchvision --index-url https://download.pytorch.org/whl/cu121
+  if [ -f requirements-iris.txt ]; then
+    pipx iris -r requirements-iris.txt
+  else
+    pipx iris transformers==5.9.0 diffusers==0.38.0 accelerate open3d==0.19.0 \
+        trimesh==4.12.2 scikit-image==0.24.0 scikit-learn==1.7.2 opencv-python \
+        scipy matplotlib qwen-vl-utils omegaconf einops rembg jinja2 psutil gdown
+  fi
+  # VGGT (multi-view) — install the package into iris
+  pipx iris git+https://github.com/facebookresearch/vggt.git || \
+    echo "  (install VGGT manually if the above fails)"
+  echo ">>> [iris] done"
+fi
+
+# ------------------------------------------------------------ TRELLIS (image->3D)
+if [ "$WHAT" = all ] || [ "$WHAT" = trellis ]; then
+  echo ">>> [trellis] env + repo (gaussian/point-cloud path; no mesh CUDA builds)"
+  [ -d models/TRELLIS ] || git clone --recurse-submodules https://github.com/microsoft/TRELLIS models/TRELLIS
+  ( cd models/TRELLIS && git submodule update --init --recursive )
+  conda create -n trellis python=3.10 -y
+  if [ -f requirements-trellis.txt ]; then
+    pipx trellis torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu118
+    pipx trellis -r requirements-trellis.txt
+  else
+    pipx trellis torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu118
+    pipx trellis pillow imageio imageio-ffmpeg tqdm easydict opencv-python-headless \
+        scipy ninja rembg onnxruntime trimesh open3d xatlas pyvista pymeshfix igraph \
+        transformers safetensors spconv-cu118
+    pipx trellis xformers==0.0.28 --index-url https://download.pytorch.org/whl/cu118
+    pipx trellis git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8
+  fi
+  # kaolin stub: flexicubes imports kaolin.utils.testing.check_tensor at load,
+  # but the gaussian path never runs it — a no-op stub avoids the heavy build.
+  SP=$(conda run -n trellis python -c "import site; print(site.getsitepackages()[0])")
+  mkdir -p "$SP/kaolin/utils"
+  printf '' > "$SP/kaolin/__init__.py"
+  printf '' > "$SP/kaolin/utils/__init__.py"
+  printf 'def check_tensor(*a, **k):\n    return True\n' > "$SP/kaolin/utils/testing.py"
+  echo ">>> [trellis] done"
+fi
+
+echo ""
+echo "Envs ready. Next: python scripts/fetch_weights.py"

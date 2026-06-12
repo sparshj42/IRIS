@@ -1,0 +1,41 @@
+# ── Third-party model repos (cloned by scripts/setup_envs.sh; not ours to ship)
+models/
+
+# ── Weights / checkpoints (downloaded by scripts/fetch_weights.py)
+checkpoints/
+*.ckpt
+*.safetensors
+
+# ── Pipeline outputs & intermediates
+output/
+output_*/
+*.ply
+*.npy
+*.pkl
+depth_map.npy
+detected_objects.txt
+temp_inpaint/
+
+# ── Logs & dev comparison renders (kept ones live in docs/images/)
+*.log
+/compare_*.png
+/ab_removal.png
+/sam3_masks.png
+/occ_slices.png
+/result_*.png
+/removal_test*.png
+/grounding_output.png
+/depth_output.png
+/depth_ordering.png
+/test_mesh.obj
+/test.png
+
+# ── Python
+__pycache__/
+*.pyc
+*.egg-info/
+.ipynb_checkpoints/
+
+# ── Keep: src/, docs/ (incl. docs/images), scripts/, README, LICENSE,
+#         requirements-iris.txt, data/ (small example frames)
+!docs/images/*.png

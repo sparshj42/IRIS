@@ -1,108 +1,92 @@
+"""
+Step 7: Register TRELLIS object point clouds into the VGGT scene and fuse.
+
+TRELLIS objects live in their own local frame, so plain ICP from identity
+never converges (fitness 0). Instead we use the VGGT point maps: the pixels of an
+object's mask in the view where it was extracted give us exactly where that object
+sits in scene coordinates. We scale + translate the object cloud onto those points,
+then refine with ICP.
+
+Inputs:  output/vggt_pointmaps.npz (step 6), object_records.pkl (pipeline)
+         or falls back to masks.pkl + object_pointclouds.pkl (steps 1/5, view 0)
+Outputs: output/fused_pointcloud.{npy,ply}
+"""
+
 import numpy as np
 import pickle
 import os
+import cv2
 import open3d as o3d
 
-def load_pointclouds():
-    # Load scene point cloud from VGGT
-    scene_pc = np.load("output/scene_pointcloud.npy")
-    print(f"Scene point cloud: {scene_pc.shape}")
 
-    # Load object point clouds from TripoSR
-    with open("object_pointclouds.pkl", "rb") as f:
-        object_pointclouds = pickle.load(f)
-    print(f"Object point clouds: {len(object_pointclouds)} objects")
+def load_inputs():
+    data = np.load("output/vggt_pointmaps.npz", allow_pickle=True)
+    world_points, conf = data["world_points"], data["conf"]
 
-    return scene_pc, object_pointclouds
+    if os.path.exists("object_records.pkl"):
+        with open("object_records.pkl", "rb") as f:
+            records = pickle.load(f)  # (name, view_idx, mask, pc)
+    else:
+        # standalone fallback: masks from step1 (view 0) + point clouds from step5
+        with open("masks.pkl", "rb") as f:
+            masks = pickle.load(f)
+        with open("object_pointclouds.pkl", "rb") as f:
+            pcs = pickle.load(f)
+        records = [(n, 0, masks[n], pc) for n, pc in pcs.items() if n in masks]
+
+    return world_points, conf, records
 
 
-def align_object_to_scene(obj_pc: np.ndarray, scene_pc: np.ndarray) -> np.ndarray:
-    """
-    Align object point cloud into scene coordinate space using ICP.
-    TripoSR generates objects in their own local coordinate system,
-    so we need to register them into the scene.
-    """
-    # Create open3d point clouds
-    obj_o3d = o3d.geometry.PointCloud()
-    obj_o3d.points = o3d.utility.Vector3dVector(obj_pc)
+def register_object(obj_pc, target_pts, scene_diag):
+    """Scale+centroid init from mask-region scene points, then ICP refine."""
+    src_diag = np.linalg.norm(obj_pc.max(0) - obj_pc.min(0))
+    tgt_diag = np.linalg.norm(target_pts.max(0) - target_pts.min(0))
+    scale = tgt_diag / max(src_diag, 1e-8)
+    init = obj_pc * scale + (target_pts.mean(0) - obj_pc.mean(0) * scale)
 
-    scene_o3d = o3d.geometry.PointCloud()
-    scene_o3d.points = o3d.utility.Vector3dVector(scene_pc)
-
-    # Estimate normals (needed for ICP)
-    obj_o3d.estimate_normals()
-    scene_o3d.estimate_normals()
-
-    # Run ICP registration
-    threshold = 0.1  # max correspondence distance
+    src = o3d.geometry.PointCloud()
+    src.points = o3d.utility.Vector3dVector(init)
+    tgt = o3d.geometry.PointCloud()
+    tgt.points = o3d.utility.Vector3dVector(target_pts)
     reg = o3d.pipelines.registration.registration_icp(
-        obj_o3d, scene_o3d,
-        threshold,
-        np.eye(4),  # initial transformation
-        o3d.pipelines.registration.TransformationEstimationPointToPlane()
-    )
-
+        src, tgt, 0.05 * scene_diag, np.eye(4),
+        o3d.pipelines.registration.TransformationEstimationPointToPoint())
+    src.transform(reg.transformation)
     print(f"  ICP fitness: {reg.fitness:.3f}, RMSE: {reg.inlier_rmse:.4f}")
-
-    # Apply transformation to object point cloud
-    obj_o3d.transform(reg.transformation)
-    aligned_pc = np.asarray(obj_o3d.points)
-
-    return aligned_pc
-
-
-def fuse_pointclouds(scene_pc: np.ndarray, object_pointclouds: dict) -> np.ndarray:
-    """
-    Fuse all point clouds into one unified point cloud.
-    """
-    all_points = [scene_pc]
-
-    for obj_name, obj_pc in object_pointclouds.items():
-        print(f"\nAligning: {obj_name}")
-        try:
-            aligned_pc = align_object_to_scene(obj_pc, scene_pc)
-            all_points.append(aligned_pc)
-            print(f"  Added {len(aligned_pc)} points")
-        except Exception as e:
-            print(f"  Failed to align {obj_name}: {e}, skipping")
-
-    # Concatenate all point clouds
-    fused = np.concatenate(all_points, axis=0)
-    print(f"\nFused point cloud: {fused.shape}")
-
-    return fused
-
-
-def downsample_pointcloud(pc: np.ndarray, voxel_size: float = 0.02) -> np.ndarray:
-    """Downsample point cloud using voxel grid to remove duplicates"""
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(pc)
-    pcd_down = pcd.voxel_down_sample(voxel_size=voxel_size)
-    result = np.asarray(pcd_down.points)
-    print(f"Downsampled: {pc.shape[0]} → {result.shape[0]} points")
-    return result
+    return np.asarray(src.points)
 
 
 if __name__ == "__main__":
     os.makedirs("output", exist_ok=True)
 
-    # Load point clouds
-    scene_pc, object_pointclouds = load_pointclouds()
+    world_points, conf, records = load_inputs()
+    V, Hv, Wv = conf.shape
+    scene_mask = conf > 0.5
+    scene_pc = world_points[scene_mask]
+    scene_diag = np.linalg.norm(scene_pc.max(0) - scene_pc.min(0))
+    print(f"Scene point cloud: {scene_pc.shape}, {len(records)} objects")
 
-    # Fuse everything together
-    print("\nFusing point clouds...")
-    fused_pc = fuse_pointclouds(scene_pc, object_pointclouds)
+    fused = [scene_pc]
+    for name, view_idx, mask, obj_pc in records:
+        print(f"\nRegistering: {name} (view {view_idx})")
+        mask_v = cv2.resize(mask, (Wv, Hv), interpolation=cv2.INTER_NEAREST) > 0.5
+        target_pts = world_points[view_idx][mask_v & scene_mask[view_idx]]
+        if len(target_pts) < 50:
+            print(f"  Only {len(target_pts)} mask points in scene, skipping")
+            continue
+        aligned = register_object(obj_pc, target_pts, scene_diag)
+        fused.append(aligned)
+        print(f"  Added {len(aligned)} points")
 
-    # Downsample to remove redundant points
-    print("\nDownsampling...")
-    fused_pc = downsample_pointcloud(fused_pc, voxel_size=0.02)
+    fused_pc = np.concatenate(fused, axis=0)
+    print(f"\nFused point cloud: {fused_pc.shape}")
 
-    # Save
-    np.save("output/fused_pointcloud.npy", fused_pc)
-    print(f"Saved output/fused_pointcloud.npy")
-
-    # Also save as .ply for visualization
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(fused_pc)
+    pcd = pcd.voxel_down_sample(voxel_size=0.005 * scene_diag)
+    fused_pc = np.asarray(pcd.points)
+    print(f"Downsampled: {fused_pc.shape}")
+
+    np.save("output/fused_pointcloud.npy", fused_pc)
     o3d.io.write_point_cloud("output/fused_pointcloud.ply", pcd)
-    print(f"Saved output/fused_pointcloud.ply")
+    print("Saved output/fused_pointcloud.npy and .ply")

@@ -1,40 +1,78 @@
-# IRIS
+# IRIS — Iterative Reconstruction via Incremental Scene-peeling
 
-- **Problem Statement Number** - 9
-- **Problem Statement Title** - Occlusion-Aware 3D Scene Reconstruction in Partially Observable Real-World Environments
-- **Team name** - Team PIL
-- **Team members (Names)** - Sparsh Pradeep Jain, Arghyadip Bagchi
-- **Institute/College Name** - Indian Institute of Technology, Kanpur
-- **Final Presentation Google Drive Link** - *Upload the PDF presentation for your final submission on Google Drive (It should be openly accessible and not behind any login wall)*
-- **Full Submission Demo Video Link** - *(Upload the Demo video on Youtube as a public or unlisted video and share the link. Google Drive uploads for video is not allowed.)*
-- **Setup & Result Reproducibility Video Link** - *(Upload the Demo video on Youtube as a public or unlisted video and share the link. Google Drive uploads for video is not allowed.)*
+**Occlusion-Aware 3D Scene Reconstruction in Partially Observable Real-World Environments**
 
-### Project Artefacts
+- **Problem Statement Number** — 9
+- **Problem Statement Title** — Occlusion-Aware 3D Scene Reconstruction in Partially Observable Real-World Environments
+- **Team name** — Team PIL
+- **Team members** — Sparsh Pradeep Jain, Arghyadip Bagchi
+- **Institute** — Indian Institute of Technology, Kanpur
 
-- **Technical Documentation** - Create a **docs** folder and add all technical details in markdown files inside this folder explaining the project Technical Stack, List of OSS libraries/projects used along with their links, the technical architecture of your solution, implementation details, installation instructions, user guide, salient features of the projects. Kindly add screenshots wherever possible.
-- **[Important]** Create a file `docs/ax.md` whiere you explain in detail how you utilizes open weight models and/or agentic development tools to implement your solution. Explain in detail your  Agentic AI setup , Agentic workflows, Reasoning & planning pipelines, Tool use / tool chaining, Coding assistants, agents, harness, MCP servers, agents.md, skills, Memory / context handling, Multi-agent orchestration systems, etc. Please highlight from your experience - what worked and **what did not work**.
-- **Source Code** - Create a **src** folder and add all developed project source codes (including training & benchmark evaluation codes) in the repo. The code must be capable of being successfully installed/executed and must run consistently on the intended platforms.
-- **Models Used** - *(Hugging Face links to all models used in the project. You are permitted to use only open weight models.)*
-- **Models Published** - *(In case you have developed a model as a part of your solution, kindly upload it on Hugging Face under appropriate open source license and add the link here.)*
-- **Datasets Used** - *(Links to all datasets used in the project. You are permitted to use publicly available datasets under licenses like Creative Commons, Open Data Commons, or equivalent.)*
-- **Datasets Published** - *(Links to all datasets created for the project and published on Hugging Face. You are allowed to publish any synthetic or proprietary dataset used in their project, but will be responsible for any legal compliance and permission for the same. The dataset can be published under Creative Commons, Open Data Commons, or equivalent license.)*
+## What IRIS does
 
-#### Final Presentation
+A robot's sensors only see what's directly in front of them; everything occluded
+becomes a blind spot that most maps silently collapse into "free space." IRIS
+attacks this with a simple geometric guarantee — **the nearest object can't be
+occluded** — and peels the scene one object at a time, nearest first: detect the
+front object, reconstruct it in 3D, then *erase* it from the image to reveal what
+was behind, and repeat. The peeled images are **same-pose synthetic views** (the
+camera never moves; each view just has fewer objects), fused into a complete,
+semantically-labeled 3D reconstruction where occluded geometry is actively
+recovered rather than left as holes.
 
-Unlike Phase 1 presentation, in Phase 2 you can freely decide the template, flow and content of your technical presentation. Ensure you cover all aspects of your solution - innovation, novelty, architecture, open datasets/models developed and used, final deliverable details, KPIs of your solution, AI/Agent use, any other details. 
+```
+RGB → VLM discovery → [peel: SAM3 segment · DepthAnythingV2 order · RORem remove]
+    → TRELLIS per-object 3D → VGGT scene recon → ICP fusion
+    → Mask2Former labeling → Marching-Cubes semantic mesh
+```
 
-#### Full Submission Demo Video
+## Documentation (`docs/`)
 
-Create a high quality video demonstration your solution in real life and showcasing how it is actually solves the proposed AX Hackathon problem.
+- [architecture.md](docs/architecture.md) — technical stack, pipeline, implementation
+- [installation.md](docs/installation.md) — setup & model downloads
+- [user_guide.md](docs/user_guide.md) — how to run, flags, staged execution
+- [ax.md](docs/ax.md) — **[required]** open-weight models & agentic development workflow
+- [attribution.md](docs/attribution.md) — upstream projects & what's original
+- [kpis.md](docs/kpis.md) — evaluation plan & metrics
 
-#### Setup & Result Reproducibility Video
+## Quick start
 
-To ensure reproducibility of results and to verify the presented KPIs, we require you to create a video demonstrating:
-- Step by step project installation,
-- Data/model download steps, 
-- Execution of all required codes to train the developed models (if any)
-- Execution of all evaluation codes to reproduce the presented results/KPIs 
+```bash
+conda activate iris
+python src/pipeline.py --image data/test3.png --output_dir output
+# outputs: output/{synthetic_views, fused_pointcloud.ply,
+#          labeled_pointcloud.ply, final_semantic_mesh.ply}
+```
 
-### Attribution 
+## Models used (all open-weight, run locally)
 
-In case this project is built on top of an existing open source project, please provide the original project link here. Also, mention what new features were developed. Failing to attribute the source projects may lead to disqualification during the time of evaluation.
+| Stage | Model |
+|-------|-------|
+| Object discovery | [Qwen3-VL-8B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct) |
+| Segmentation | [SAM 3](https://huggingface.co/facebook/sam3) |
+| Depth | [Depth Anything V2 Large](https://huggingface.co/depth-anything/Depth-Anything-V2-Large-hf) |
+| Object removal | [RORem](https://github.com/leeruibin/RORem) on [SDXL-Inpainting](https://huggingface.co/diffusers/stable-diffusion-xl-1.0-inpainting-0.1) |
+| Image-to-3D | [TRELLIS-image-large](https://huggingface.co/microsoft/TRELLIS-image-large) |
+| Multi-view recon | [VGGT-1B](https://huggingface.co/facebook/VGGT-1B) |
+| Semantic labeling | [Mask2Former Swin-L ADE](https://huggingface.co/facebook/mask2former-swin-large-ade-semantic) |
+
+See [docs/attribution.md](docs/attribution.md) for models evaluated but not kept,
+and for what is original to IRIS.
+
+## Datasets
+
+- **Used for evaluation:** ScanNet / ScanNet++ (indoor RGB-D with GT 3D + labels),
+  NYU Depth V2 (depth), S3DIS (semantic labels). See [docs/kpis.md](docs/kpis.md).
+- **Published:** none.
+
+## Submission artefacts
+
+- **Source code** — [src/](src/) (orchestrator `pipeline.py` + standalone `stepN_*.py`)
+- **Models published** — none (no new model trained)
+- **Final Presentation (PDF)** — _TODO: add public Google Drive link_
+- **Demo Video** — _TODO: add YouTube link_
+- **Setup & Reproducibility Video** — _TODO: add YouTube link_
+
+## License
+
+See [LICENSE](LICENSE).
