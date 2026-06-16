@@ -18,7 +18,10 @@ collected so far. It separates **diagnostic results we have measured** from the
   This is what separates IRIS from full-visibility methods (Atlas) and from object
   shape-completion (SceneComplete).
 
-**Semantic labeling** (floor / wall / ceiling / platform / other):
+**Semantic labeling.** IRIS now produces **open-vocabulary, instance-level** labels
+(object classes from the VLM names + SAM 3 masks; background stuff from
+Mask2Former), which map down to a fixed benchmark taxonomy (e.g. the ScanNet-20
+classes) for scoring:
 - **mIoU** and **per-class IoU** vs. GT labels.
 - **Overall point accuracy**.
 
@@ -31,12 +34,22 @@ collected so far. It separates **diagnostic results we have measured** from the
    RGB frame; align the output to the GT mesh (Umeyama/ICP, scale from sparse
    depth where available); compute the metrics above, reporting occluded-region
    metrics separately from visible-region metrics.
-3. **Baselines** — compare against the systems in the Phase-1 analysis (Atlas,
-   SceneComplete, Seen2Scene, Behind-the-Veil) on the occlusion-recovery metric.
+3. **Baselines** — the closest related work, **Gen3DSR** (divide-and-conquer
+   single-view scene reconstruction, 3DV 2025), and **SceneComplete**, plus the
+   Phase-1 systems (Atlas, Seen2Scene, Behind-the-Veil), on the occlusion-recovery
+   metric.
 
-> Status: the pipeline runs end-to-end and the harness for GT alignment is the
-> next implementation step. Headline ScanNet numbers will be produced for the
-> final submission and the reproducibility video; the framework above is fixed so
+**Baseline note (Gen3DSR).** We built and ran Gen3DSR's released code on the same
+ScanNet frame. It needed three robustness patches just to complete on a cluttered
+real scene (its object-to-scene placement step crashed on degenerate RANSAC fits
+and empty meshes) and still dropped ~⅓ of objects. The shared hard step for this
+whole paradigm — IRIS included — is **placing generated objects into a metric
+scene**; IRIS degrades gracefully where the released Gen3DSR crashes.
+
+> Status: the pipeline runs end-to-end; a ScanNet GT-alignment + scoring harness
+> (`eval_scannet.py`) is in place and being tightened. Headline ScanNet numbers
+> will be produced for the final submission and the reproducibility video; the
+> framework above is fixed so
 > the numbers are comparable and reproducible.
 
 ## Diagnostic results measured so far

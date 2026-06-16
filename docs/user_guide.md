@@ -17,19 +17,25 @@ Inputs: a single RGB image. Outputs land in `--output_dir`:
 ## Flags
 
 The pipeline uses the models chosen by the A/B evaluations in [ax.md](ax.md):
-**SAM 3** (segmentation), **RORem** (removal), **TRELLIS** (image-to-3D),
-**VGGT** (multi-view), **Mask2Former** (labeling). The evaluated-but-rejected
-alternatives (DINO+SAM2, LaMa, PowerPaint, TripoSR) are documented in `ax.md`
-with comparison figures, but are not part of the shipped pipeline.
+**Qwen3-VL-32B** (discovery), **SAM 3** (segmentation), **Depth-Anything-V2**
+(occlusion ordering), **RORem** (removal), **Amodal3R** (occlusion-aware
+image-to-3D, default), **VGGT** (multi-view), **Mask2Former** (background labeling).
+Image-to-3D is swappable via `--image3d`; the alternatives are documented in
+[attribution.md](attribution.md) and [ax.md](ax.md).
 
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `--image` | `data/test.png` | input RGB image |
+| `--image` | `data/test.png` | input RGB image (single-frame, IRIS's main mode) |
+| `--scene_dir` | – | folder of images (multi-view); overrides `--image` |
 | `--output_dir` | `output` | where artifacts are written |
+| `--image3d` | `trellis` | per-object 3D backend: `amodal3r` (occlusion-aware, recommended), `trellis`, `wonder3d`, `tigon`, `splattn` |
 | `--sparse_depth` | – | `.npy` of (row,col,metric_depth) ~500 px; makes the **whole reconstruction metric** (scales VGGT via median depth ratio) for the `<2 cm` KPI |
-| `--skip_3d` | off | skip per-object image-to-3D (TRELLIS); fused recon = VGGT scene |
+| `--skip_3d` | off | skip per-object image-to-3D; fused recon = VGGT scene only |
 | `--resume` | off | skip phases whose outputs already exist (crash recovery) |
 | `--stop_after_peeling` | off | stop after the peel phase |
+
+> Set `IRIS_VLM_ID=Qwen/Qwen3-VL-8B-Instruct` for a lighter (~16 GB) discovery VLM
+> on smaller GPUs; the 32B default expects a large GPU.
 
 ## Staged / crash-safe execution
 
@@ -40,8 +46,8 @@ On an unstable machine, split the run so each stage is short and resumable:
 python src/pipeline.py --image data/test3.png --stop_after_peeling \
        --output_dir output --resume
 
-# Stage 2 — TRELLIS 3D → VGGT → fusion → labeling → mesh
-python src/pipeline.py --image data/test3.png --output_dir output --resume
+# Stage 2 — image-to-3D → VGGT → fusion → labeling → mesh
+python src/pipeline.py --image data/test3.png --output_dir output --image3d amodal3r --resume
 ```
 
 `--resume` reuses any completed phase and continues per-object peeling from the

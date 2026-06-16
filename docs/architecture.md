@@ -20,28 +20,32 @@ in which occluded geometry is actively recovered rather than left as holes.
 RGB image
    │
    ▼
-[A] Object discovery ............ Qwen3-VL  → list of object names (JSON)
+[A] Object discovery ............ Qwen3-VL-32B → list of object names (JSON)
    │
    ▼
-[B] Per-object peel loop (nearest → farthest), per iteration:
-     • segment object on current image .... SAM 3            → mask
-     • order by nearest-point depth ....... Depth Anything V2
-     • save white-bg object crop          (for phase B2)
+[B] Segmentation + occlusion ordering:
+     • segment every named object ......... SAM 3            → instance masks
+     • build occlusion graph + toposort ... Depth Anything V2 (boundary depth
+   │                                          + physical support) → peel order
+   ▼
+[B1] Per-object peel loop (front → back), per iteration:
+     • save white-bg object crop + mask   (for phase B2)
      • remove object → reveal background .. RORem (SDXL inpaint, crop@512)
-     • store result as a synthetic view
+     • store result as a same-pose synthetic view
    │
    ▼
-[B2] Image-to-3D (deferred) ...... TRELLIS  → per-object point cloud
-   │
+[B2] Image-to-3D (deferred) ...... Amodal3R (default) / TRELLIS / Wonder3D / TIGON
+   │                                → per-object point cloud
    ▼
 [C] Multi-view reconstruction .... VGGT     → scene point cloud + per-pixel
    │                                           world points & confidence
    ▼
-[D] Registration + fusion ........ mask-guided ICP (Open3D) → fused cloud
-   │
+[D] Registration + fusion ........ gravity-align + yaw-search + weld ICP +
+   │                                floor-contact + object-relative graft;
+   │                                whole output rotated to gravity-aligned frame
    ▼
-[E] Semantic labeling ............ Mask2Former + multi-view KD-tree voting
-   │                                (labels via VGGT world points)
+[E] Semantic labeling ............ instance masks + VLM names → object classes;
+   │                                Mask2Former for background stuff; KD-tree vote
    ▼
 [F] Mesh extraction .............. Marching Cubes (scikit-image) → semantic mesh
    │
@@ -54,38 +58,60 @@ stage is also runnable standalone as `src/stepN_*.py`.
 
 ## Stage details
 
-**[A] Object discovery.** Qwen3-VL-8B is prompted (descriptive, singular, JSON
-output) for a list of distinct movable objects. Run in a subprocess so its ~16 GB
-of VRAM is fully released before the multi-model peel phase.
+**[A] Object discovery.** Qwen3-VL-32B is prompted (descriptive, singular, JSON
+output) for a list of distinct movable objects. (The 8B variant is selectable via
+`IRIS_VLM_ID`; an A/B showed the two tie on simple scenes but the 32B finds ~2× the
+objects on cluttered scenes, where the 8B wastes its budget on duplicate
+detections.) Run in a subprocess so its VRAM is released before the peel phase.
 
-**[B] Depth ordering + peeling.** SAM 3 segments each named object
-(text-promptable; one model replaces the older Grounding-DINO→SAM2 two-step).
-Depth Anything V2 gives a relative depth map; each object's *nearest* point
-(max disparity over its mask) sets the peel order, with a support-aware
-reordering so objects resting on a surface are peeled before the surface. Removal
-uses RORem on a padded square **crop** around the mask (512²), feather-composited
-back so only masked pixels change — no cumulative blur across peels.
+**[B] Segmentation + occlusion ordering.** SAM 3 segments each named object
+(text-promptable; one model replaces the older Grounding-DINO→SAM2 two-step) into
+instance masks. The peel order is then a **pairwise occlusion graph + topological
+sort** (`build_occlusion_order`): for each adjacent mask pair, the nearer side at
+their shared *contact band* (median Depth-Anything-V2 disparity, sampled just
+inside each mask) is the occluder → a directed edge; a gravity-aware physical-
+support cue (a small object resting in another's footprint) breaks depth ties; the
+graph is topologically sorted into a guaranteed front-to-back order. This replaces
+a naive global depth sort, which on cluttered scenes mis-orders large objects that
+poke in front of a neighbour only at one edge.
 
-**[B2] Image-to-3D (deferred).** Each saved object crop → TRELLIS → a point cloud
-(from TRELLIS's 3D-Gaussian positions). Deferred to its own phase, after the peel
-models are freed, so the ~8–10 GB TRELLIS worker has the GPU to itself.
+**[B1] Peeling.** Objects are removed front-to-back. Removal uses RORem on a padded
+square **crop** around the mask (512²), feather-composited back so only masked
+pixels change — no cumulative blur across peels. Each removal yields the next
+same-pose synthetic view; the object's crop + mask are saved for phase B2.
+
+**[B2] Image-to-3D (deferred).** Each saved object crop → an image-to-3D backend →
+a point cloud. The default is **Amodal3R** (occlusion-aware: it consumes the
+occluder mask and reconstructs the complete object through occlusion);
+**TRELLIS**, **Wonder3D** (cross-domain multi-view diffusion + visual-hull carve),
+and **TIGON** are selectable via `--image3d`. Each backend runs in its own pinned
+conda env behind a line-protocol subprocess worker (`src/*_worker.py`), deferred to
+its own phase so the worker has the GPU to itself.
 
 **[C] Multi-view reconstruction.** All synthetic views go to VGGT, which returns
 per-view per-pixel world points + confidence. Confidence-thresholded points form
 the scene cloud. (Novel use: same-pose views with progressively fewer objects,
 rather than the multi-position views these models expect.)
 
-**[D] Registration + fusion.** TRELLIS objects live in their own canonical frame.
-For each object we take the VGGT world points under its mask (where it sits in the
-scene), seed a scale+centroid alignment, and refine with point-to-point ICP. This
-mask-guided initialization is why fitness reaches 0.88–1.0 (a naive
-identity-initialized ICP failed at 0.0).
+**[D] Registration + fusion.** Generated objects live in their own canonical
+(+Z-up) frame. For each object we take the VGGT world points under its mask (where
+it sits in the scene) and register the generated object to them: gravity-align its
+up-axis to the scene floor normal, search 24 yaw angles, and refine with a
+translation-only **weld** ICP (asymmetric: every observed point must land on the
+object surface), then a floor-contact stretch seats the base on the floor. Only
+generated geometry *not already observed* (the occluded back/sides) is grafted on —
+an **object-relative** 3D-inpainting threshold, so the observed front keeps its true
+size. Finally the whole reconstruction (cloud + objects + camera) is rotated so the
+estimated floor normal points up, giving a **gravity-aligned output** that stands
+upright in any viewer instead of in VGGT's arbitrary tilted frame.
 
-**[E] Semantic labeling.** Mask2Former produces a 2D ADE20K segmentation per view,
-mapped to IRIS classes (floor / wall / ceiling / platform / other). Because VGGT
-already gives each pixel a world point, we label those points directly and vote
-onto the fused cloud with a KD-tree — avoiding the camera-intrinsic guesswork that
-made an earlier version label everything "other."
+**[E] Semantic labeling.** Labels come from the **instance masks + VLM open-
+vocabulary names** IRIS already computed: each object's SAM 3 mask is back-projected
+onto the VGGT world points and tagged with its VLM name mapped to a canonical class
+(chair, table, screen, bottle, …); **Mask2Former** supplies background *stuff*
+(floor / wall / ceiling / window / curtain) only. Labels are voted onto the fused
+cloud with a KD-tree. This replaces an earlier closed 5-bucket taxonomy that
+collapsed every object into "other".
 
 **[F] Mesh extraction.** The labeled cloud is voxelized into an occupancy grid and
 Marching Cubes extracts a watertight mesh; vertex labels/colors are transferred
@@ -104,12 +130,14 @@ resolves occlusion*. Reconstructed objects are filled to solid **occupied** volu
 
 ## Engineering notes
 
-- **Multi-env isolation.** PowerPaint and TRELLIS need dependencies incompatible
-  with the main env, so they run in dedicated conda envs behind subprocess workers
-  (see [ax.md](ax.md) §3). The main pipeline stays on one consistent stack.
-- **VRAM budgeting.** Models load and free per phase; heavy models (VLM, TRELLIS)
-  run isolated. Peak fits 24 GB; a `--low-vram` path (4-bit VLM, CPU-offload
-  removal, fewer VGGT views) is the route to ≤12 GB.
+- **Multi-env isolation.** The image-to-3D backends (Amodal3R, TRELLIS, Wonder3D,
+  TIGON) need mutually incompatible dependencies, so each runs in its own conda env
+  behind a line-protocol subprocess worker `src/*_worker.py` (see [ax.md](ax.md)
+  §3). The main pipeline stays on one consistent stack and talks to the worker over
+  a tiny `@@`-prefixed stdin/stdout protocol.
+- **VRAM budgeting.** Models load and free per phase; heavy models (the 32B VLM,
+  the image-to-3D worker) run isolated. The 32B VLM is the peak (~65 GB, transient,
+  freed before peeling); the rest of the pipeline fits comfortably alongside.
 - **Crash resilience.** Per-object peel checkpointing + `--resume` + staged
   execution make the run robust to the build machine's power instability.
 
@@ -123,7 +151,8 @@ objects (green) registered onto the table.
 ## Outputs (`output/`)
 
 - `synthetic_views/` — the peeled same-pose views
-- `object_crops/` — per-object inputs to TRELLIS
-- `fused_pointcloud.ply` — scene + registered objects
+- `object_crops/` — per-object crops + masks (inputs to the image-to-3D backend)
+- `fused_pointcloud.ply` — scene + registered objects (gravity-aligned)
 - `labeled_pointcloud.ply` — semantically colored cloud
 - `final_semantic_mesh.ply` — final watertight semantic mesh
+- `occupancy_grid.npy` (+ `occupancy_render.png`) — free / occupied / occluded grid

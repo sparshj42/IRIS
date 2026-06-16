@@ -1,10 +1,11 @@
 # Installation
 
 IRIS runs on Linux with an NVIDIA GPU. The main pipeline lives in one conda env
-(`iris`); two optional models (PowerPaint, TRELLIS) live in their own envs because
-their dependencies conflict with the main stack — they are driven as subprocess
-workers (see [ax.md](ax.md) §3). All paths resolve from the repo root or env vars
-([../src/config.py](../src/config.py)), so the project is portable across machines.
+(`iris`); each image-to-3D backend (Amodal3R, TRELLIS, Wonder3D, TIGON) lives in
+its own env because their dependencies conflict with the main stack and with each
+other — they are driven as subprocess workers (see [ax.md](ax.md) §3). All paths
+resolve from the repo root or env vars ([../src/config.py](../src/config.py)), so
+the project is portable across machines.
 
 > All models are open-weight; most auto-download from Hugging Face on first run.
 > No API keys or paid services are needed at runtime.
@@ -14,27 +15,32 @@ workers (see [ax.md](ax.md) §3). All paths resolve from the repo root or env va
 ```bash
 git clone <this-repo> IRIS && cd IRIS
 
-# 1. create conda envs + clone third-party model repos (iris / trellis / powerpaint)
+# 1. create conda envs + clone third-party model repos (iris + image-to-3D backends)
 bash scripts/setup_envs.sh                 # or: setup_envs.sh iris  (just the main env)
 
-# 2. fetch the weights that aren't auto-downloaded (PowerPaint; RORem instructions)
+# 2. fetch the weights that aren't auto-downloaded (RORem instructions below)
 conda run -n iris python scripts/fetch_weights.py
 
-# 3. run
-conda run -n iris python src/pipeline.py --image data/test3.png --output_dir output
+# 3. run (default backend = occlusion-aware Amodal3R, in the tigon env)
+conda run -n iris python src/pipeline.py --image data/test3.png --output_dir output --image3d amodal3r
 ```
 
-`setup_envs.sh` builds each env from the pinned `requirements-{iris,trellis,powerpaint}.txt`
-and applies the small compat shims (TRELLIS kaolin stub; the xformers alias is in
-code). TripoSR (fallback image-to-3D) and VGGT are installed into `iris`.
+`setup_envs.sh` builds the `iris` env plus the image-to-3D backend env(s) from their
+pinned `requirements-*.txt` / repo environment files, and applies the small compat
+shims (e.g. the TRELLIS xformers alias is in code). VGGT is installed into `iris`.
 
 ## What runs where
 
 | Env | Purpose | Key pins |
 |-----|---------|----------|
 | `iris` | full pipeline (VLM, SAM3, depth, RORem, VGGT, Mask2Former, occupancy) | torch 2.5.1+cu121, transformers 5.9, diffusers 0.38 |
-| `trellis` | image-to-3D worker (`--image3d trellis`) | torch 2.4.1+cu118, spconv-cu118, xformers 0.0.28 |
-| `powerpaint` | removal A/B worker (`--remover powerpaint`) | torch 2.1.2, transformers 4.28, diffusers 0.27 |
+| `tigon` | **Amodal3R** (`--image3d amodal3r`, default) + TIGON (`--image3d tigon`) | torch 2.4.0+cu118 |
+| `trellis` | TRELLIS image-to-3D (`--image3d trellis`) | torch 2.4.1+cu118, spconv-cu118, xformers 0.0.28 |
+| `wonder3d` | Wonder3D image-to-3D (`--image3d wonder3d`) | torch 2.0.1+cu118, diffusers 0.19.3, xformers 0.0.22 |
+| `splattn` | SplAttN point-cloud completion (`--image3d splattn`) | torch 2.4.1+cu121 |
+
+Only the `iris` env plus the env for your chosen `--image3d` backend are required;
+Amodal3R (the default) uses the `tigon` env.
 
 ## Configuration / overrides
 
@@ -43,9 +49,9 @@ All optional; defaults resolve under the repo. Set if your layout differs:
 | Env var | Default |
 |---------|---------|
 | `IRIS_ROREM_CKPT` | `checkpoints/RORem` |
-| `IRIS_POWERPAINT_CKPT` | `models/PowerPaint/checkpoints/ppt-v2-1` |
-| `IRIS_TRELLIS_DIR` / `IRIS_POWERPAINT_DIR` / `IRIS_TRIPOSR_DIR` | `models/<name>` |
-| `IRIS_TRELLIS_PYTHON` / `IRIS_POWERPAINT_PYTHON` | auto-detected conda env python |
+| `IRIS_VLM_ID` | `Qwen/Qwen3-VL-32B-Instruct` (set to the 8B id for a lighter run) |
+| `IRIS_TRELLIS_DIR` / `IRIS_TIGON_DIR` / `IRIS_AMODAL3R_DIR` / `IRIS_WONDER3D_DIR` / `IRIS_SPLATTN_DIR` | `models/<name>` |
+| `IRIS_TRELLIS_PYTHON` / `IRIS_TIGON_PYTHON` / `IRIS_WONDER3D_PYTHON` / `IRIS_SPLATTN_PYTHON` | auto-detected conda env python |
 
 The worker envs are auto-located via `CONDA_EXE` / common conda roots; override the
 `*_PYTHON` vars if needed.
@@ -56,16 +62,18 @@ The worker envs are auto-located via `CONDA_EXE` / common conda roots; override 
   UNet checkpoint from <https://github.com/leeruibin/RORem>, place it at
   `checkpoints/RORem` (or set `IRIS_ROREM_CKPT`). Or just use `--remover lama`
   (no extra weights).
-- **PowerPaint v2-1** auto-downloads + converts in `fetch_weights.py`.
-- Everything else (Qwen3-VL, SAM3, Depth-Anything-V2, SDXL-inpainting, TRELLIS,
-  VGGT, Mask2Former) auto-downloads from Hugging Face on first use.
+- **SAM 3** (`facebook/sam3`) is a gated Hugging Face repo — accept its terms and
+  export an `HF_TOKEN` so it (and any other gated weights) download.
+- Everything else (Qwen3-VL, SAM3, Depth-Anything-V2, SDXL-inpainting, Amodal3R,
+  TRELLIS, Wonder3D, VGGT, Mask2Former) auto-downloads from Hugging Face on first use.
 
 ## GPU notes
 
-- Developed on a 24 GB RTX 3090; runs comfortably on larger GPUs (e.g. H100 80 GB),
-  where the multi-view path and higher resolutions are unconstrained.
-- On a power-constrained machine, sustained load can trip the PSU; cap with
-  `sudo nvidia-smi -pl 200` and rely on `--resume` (per-phase / per-object
-  checkpointing). Not needed on datacenter GPUs.
+- The default **32B VLM** is the memory peak (~65 GB, transient — loaded for
+  discovery, freed before peeling), so it expects a large GPU (e.g. H100 80 GB).
+  For a 24 GB card, set `IRIS_VLM_ID=Qwen/Qwen3-VL-8B-Instruct` (~16 GB); the rest
+  of the pipeline fits comfortably.
+- `--resume` (per-phase / per-object checkpointing) makes a run robust to crashes,
+  so a failure costs one object rather than the whole run.
 
 See [user_guide.md](user_guide.md) for usage and flags.
