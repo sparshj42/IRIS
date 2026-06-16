@@ -19,6 +19,10 @@ def _path(env, *default_parts):
 
 # ── third-party model repo (cloned into models/, see scripts/setup_envs.sh) ──
 TRELLIS_DIR = _path("IRIS_TRELLIS_DIR", "models", "TRELLIS")
+TIGON_DIR = _path("IRIS_TIGON_DIR", "models", "TIGON")
+AMODAL3R_DIR = _path("IRIS_AMODAL3R_DIR", "models", "Amodal3R")
+SPLATTN_DIR = _path("IRIS_SPLATTN_DIR", "models", "SplAttN")
+WONDER3D_DIR = _path("IRIS_WONDER3D_DIR", "models", "Wonder3D")
 
 # ── checkpoints ──
 # RORem UNet weights (download via scripts/fetch_weights.py or set the env var)
@@ -26,7 +30,7 @@ ROREM_CKPT = _path("IRIS_ROREM_CKPT", "checkpoints", "RORem")
 SDXL_BASE = os.environ.get("IRIS_SDXL_BASE", "diffusers/stable-diffusion-xl-1.0-inpainting-0.1")
 
 # HF model ids (open-weight; auto-download on first use)
-VLM_ID = "Qwen/Qwen3-VL-8B-Instruct"
+VLM_ID = os.environ.get("IRIS_VLM_ID", "Qwen/Qwen3-VL-32B-Instruct")  # H100: bigger VLM for discovery
 SAM3_ID = "facebook/sam3"
 DEPTH_ID = "depth-anything/Depth-Anything-V2-Large-hf"
 TRELLIS_ID = "microsoft/TRELLIS-image-large"

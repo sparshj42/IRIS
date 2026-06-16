@@ -8,71 +8,83 @@
 - **Team members** — Sparsh Pradeep Jain, Arghyadip Bagchi
 - **Institute** — Indian Institute of Technology, Kanpur
 
+---
+
 ## What IRIS does
 
 A robot's sensors only see what's directly in front of them; everything occluded
 becomes a blind spot that most maps silently collapse into "free space." IRIS
-attacks this with a simple geometric guarantee — **the nearest object can't be
+attacks this with a simple geometric guarantee — **the nearest object cannot be
 occluded** — and peels the scene one object at a time, nearest first: detect the
 front object, reconstruct it in 3D, then *erase* it from the image to reveal what
 was behind, and repeat. The peeled images are **same-pose synthetic views** (the
 camera never moves; each view just has fewer objects), fused into a complete,
-semantically-labeled 3D reconstruction where occluded geometry is actively
-recovered rather than left as holes.
+semantically-labeled 3D reconstruction. Unobserved volume is explicitly flagged as
+**occluded (unknown)** rather than falsely "free" — the free / occupied / occluded
+distinction the problem requires.
 
 ```
-RGB → VLM discovery → [peel: SAM3 segment · DepthAnythingV2 order · RORem remove]
-    → TRELLIS per-object 3D → VGGT scene recon → ICP fusion
-    → Mask2Former labeling → Marching-Cubes semantic mesh
+RGB → VLM discovery (Qwen3-VL) → for each object, nearest-first:
+        SAM3 segment · DepthAnythingV2 + occlusion-graph order · RORem erase
+      → per-object image-to-3D (Amodal3R / TRELLIS / Wonder3D)
+      → VGGT scene recon on same-pose views → gravity-aligned register + fuse
+      → instance-aware semantic labeling → Marching-Cubes mesh
+      → free / occupied / occluded occupancy grid
 ```
 
-## Documentation (`docs/`)
+See [docs/architecture.md](docs/architecture.md) for the full technical breakdown.
 
-- [architecture.md](docs/architecture.md) — technical stack, pipeline, implementation
-- [installation.md](docs/installation.md) — setup & model downloads
-- [user_guide.md](docs/user_guide.md) — how to run, flags, staged execution
-- [ax.md](docs/ax.md) — **[required]** open-weight models & agentic development workflow
-- [attribution.md](docs/attribution.md) — upstream projects & what's original
-- [kpis.md](docs/kpis.md) — evaluation plan & metrics
+---
 
-## Quick start
+## Project Artefacts
 
-```bash
-conda activate iris
-python src/pipeline.py --image data/test3.png --output_dir output
-# outputs: output/{synthetic_views, fused_pointcloud.ply,
-#          labeled_pointcloud.ply, final_semantic_mesh.ply}
-```
+- **Source code** — [src/](src/) — orchestrator [`pipeline.py`](src/pipeline.py) plus standalone `stepN_*.py` stages and per-backend image-to-3D workers (`*_worker.py`). Run via `python src/pipeline.py` (see [docs/user_guide.md](docs/user_guide.md)).
+- **Documentation** — [docs/](docs/): [architecture](docs/architecture.md) · [installation](docs/installation.md) · [user guide](docs/user_guide.md) · [evaluation/KPIs](docs/kpis.md) · [ax.md](docs/ax.md) · [attribution](docs/attribution.md)
 
-## Models used (all open-weight, run locally)
+- **Models Used** (all open-weight, run locally):
 
-| Stage | Model |
-|-------|-------|
-| Object discovery | [Qwen3-VL-8B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct) |
-| Segmentation | [SAM 3](https://huggingface.co/facebook/sam3) |
-| Depth | [Depth Anything V2 Large](https://huggingface.co/depth-anything/Depth-Anything-V2-Large-hf) |
-| Object removal | [RORem](https://github.com/leeruibin/RORem) on [SDXL-Inpainting](https://huggingface.co/diffusers/stable-diffusion-xl-1.0-inpainting-0.1) |
-| Image-to-3D | [TRELLIS-image-large](https://huggingface.co/microsoft/TRELLIS-image-large) |
-| Multi-view recon | [VGGT-1B](https://huggingface.co/facebook/VGGT-1B) |
-| Semantic labeling | [Mask2Former Swin-L ADE](https://huggingface.co/facebook/mask2former-swin-large-ade-semantic) |
+  | Stage | Model |
+  |-------|-------|
+  | Object discovery (VLM) | [Qwen3-VL-32B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-32B-Instruct) (8B variant also supported) |
+  | Instance segmentation | [SAM 3](https://huggingface.co/facebook/sam3) |
+  | Monocular depth (peel ordering) | [Depth Anything V2 Large](https://huggingface.co/depth-anything/Depth-Anything-V2-Large-hf) |
+  | Object removal / inpainting | [RORem](https://github.com/leeruibin/RORem) on [SDXL-Inpainting](https://huggingface.co/diffusers/stable-diffusion-xl-1.0-inpainting-0.1) |
+  | Image-to-3D (occlusion-aware, default) | [Amodal3R](https://github.com/Sm0kyWu/Amodal3R) |
+  | Image-to-3D (alternatives) | [TRELLIS-image-large](https://huggingface.co/microsoft/TRELLIS-image-large) · [Wonder3D](https://github.com/xxlong0/Wonder3D) · [TIGON](https://jumpat.github.io/tigon-page/) |
+  | Multi-view scene reconstruction | [VGGT-1B](https://huggingface.co/facebook/VGGT-1B) |
+  | Semantic labeling (background stuff) | [Mask2Former Swin-L ADE](https://huggingface.co/facebook/mask2former-swin-large-ade-semantic) |
 
-See [docs/attribution.md](docs/attribution.md) for models evaluated but not kept,
-and for what is original to IRIS.
+- **Models Published** — none (no new model trained; IRIS is a training-free composition of open-weight models).
+- **Datasets Used** — [ScanNet / ScanNet++](http://www.scan-net.org/) (indoor RGB-D, GT 3D + semantics), [NYU Depth V2](https://cs.nyu.edu/~fergus/datasets/nyu_depth_v2.html), [S3DIS](http://buildingparser.stanford.edu/dataset.html) — for evaluation only.
+- **Datasets Published** — none.
 
-## Datasets
+---
 
-- **Used for evaluation:** ScanNet / ScanNet++ (indoor RGB-D with GT 3D + labels),
-  NYU Depth V2 (depth), S3DIS (semantic labels). See [docs/kpis.md](docs/kpis.md).
-- **Published:** none.
+## Final Presentation
 
-## Submission artefacts
+_TODO: add public Google Drive link to the final presentation (PDF/slides)._
 
-- **Source code** — [src/](src/) (orchestrator `pipeline.py` + standalone `stepN_*.py`)
-- **Models published** — none (no new model trained)
-- **Final Presentation (PDF)** — _TODO: add public Google Drive link_
-- **Demo Video** — _TODO: add YouTube link_
-- **Setup & Reproducibility Video** — _TODO: add YouTube link_
+## Full Submission Demo Video
+
+_TODO: add YouTube link (public/unlisted)._
+
+## Setup & Result Reproducibility Video
+
+_TODO: add YouTube link (public/unlisted)._
+
+---
+
+## Attribution
+
+IRIS is a **training-free orchestration** of open-source, open-weight models; the
+novel contribution is the iterative occlusion-peeling pipeline, the occlusion-graph
+peel ordering, the same-pose multi-view fusion + gravity-aligned registration, the
+instance-aware semantic labeling, and the free/occupied/occluded occupancy output.
+All upstream projects and their licenses are credited in
+**[docs/attribution.md](docs/attribution.md)** — including models we evaluated but
+did not keep. Agentic-development tooling and process are documented in
+**[docs/ax.md](docs/ax.md)**.
 
 ## License
 
-See [LICENSE](LICENSE).
+Released under the [MIT License](LICENSE).

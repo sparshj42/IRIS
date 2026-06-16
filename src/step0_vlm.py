@@ -1,15 +1,20 @@
 import argparse
+import os
+import sys
 import torch
 import re
 from PIL import Image
 from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--image", default="test.png")
 parser.add_argument("--out", default="detected_objects.txt")
 args = parser.parse_args()
 
-model_id = "Qwen/Qwen3-VL-8B-Instruct"
+model_id = config.VLM_ID
 
 processor = AutoProcessor.from_pretrained(model_id)
 model = Qwen3VLForConditionalGeneration.from_pretrained(

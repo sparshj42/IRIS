@@ -14,9 +14,12 @@ license.
 | Depth Anything V2 | monocular depth | https://github.com/DepthAnything/Depth-Anything-V2 |
 | RORem | object removal | https://github.com/leeruibin/RORem |
 | Stable Diffusion XL Inpainting | RORem base pipeline | https://huggingface.co/diffusers/stable-diffusion-xl-1.0-inpainting-0.1 |
-| TRELLIS | image-to-3D | https://github.com/microsoft/TRELLIS |
+| Amodal3R | occlusion-aware image-to-3D (default backend) | https://github.com/Sm0kyWu/Amodal3R |
+| TRELLIS | image-to-3D (selectable backend; Amodal3R/Wonder3D built on its gaussian decoder) | https://github.com/microsoft/TRELLIS |
+| Wonder3D | image-to-3D via cross-domain multi-view diffusion (selectable backend) | https://github.com/xxlong0/Wonder3D |
+| TIGON | text+image image-to-3D (selectable backend) | https://jumpat.github.io/tigon-page/ |
 | VGGT | pose-free multi-view reconstruction | https://github.com/facebookresearch/vggt |
-| Mask2Former | 2D semantic segmentation | https://huggingface.co/facebook/mask2former-swin-large-ade-semantic |
+| Mask2Former | 2D semantic segmentation (background "stuff" labels) | https://huggingface.co/facebook/mask2former-swin-large-ade-semantic |
 
 ## Models evaluated during development (not in final pipeline)
 
@@ -28,6 +31,16 @@ license.
 | PowerPaint v2 | removal, rejected (hallucinated) | https://github.com/open-mmlab/PowerPaint |
 | Depth Anything 3 | multi-view, shelved (marginal vs VGGT) | https://github.com/ByteDance-Seed/depth-anything-3 |
 | InstantMesh | image-to-3D, explored | https://github.com/TencentARC/InstantMesh |
+| SplAttN | image-guided point-cloud completion, explored (fills viewpoint not scene occlusion) | https://github.com/zay002/SplAttN |
+| Pixel3D / Pixal3D | image-to-3D, explored | https://github.com/TencentARC/InstantMesh |
+| GenPC | point-cloud completion, explored | https://github.com/Sangminhong/GenPC |
+
+## Baselines compared against
+
+| Project | Use | Link |
+|---------|-----|------|
+| Gen3DSR | divide-and-conquer single-view scene reconstruction (3DV 2025) — closest related work; benchmarked head-to-head | https://github.com/AndreeaDogaru/Gen3DSR |
+| SceneComplete | open-world single-RGB-D scene completion for manipulation — related work | https://github.com/scenecomplete/SceneComplete |
 
 ## Key libraries
 
@@ -37,7 +50,10 @@ scikit-learn, SciPy, OpenCV, spconv, xformers. Full versions in
 
 ## What is original to IRIS
 
-The **iterative depth-ordered occlusion peeling**, the **same-pose synthetic-view
-formulation for multi-view reconstruction**, the **mask-guided ICP registration**
-of single-image-3D objects into the VGGT scene, and the **end-to-end
-orchestration** are our own contribution. See [architecture.md](architecture.md).
+The following are our own contribution (see [architecture.md](architecture.md)):
+
+- **Iterative depth-ordered occlusion peeling** with the *nearest-object-cannot-be-occluded* guarantee, and the **same-pose synthetic-view formulation** for multi-view reconstruction.
+- **Occlusion-graph peel ordering** — a pairwise occlusion graph built from boundary depth + physical-support cues, topologically sorted (replacing a naive global depth sort).
+- **Gravity-aligned registration & fusion** — gravity-align + yaw-search + asymmetric weld ICP + floor-contact + object-relative 3D-inpainting graft of occluded geometry, with the whole reconstruction rotated to a gravity-aligned output frame.
+- **Instance-aware semantic labeling** — labels propagated from the SAM3 instance masks + VLM open-vocabulary names (background "stuff" from Mask2Former), instead of a closed coarse taxonomy.
+- **Free / occupied / occluded occupancy** output and the **end-to-end orchestration**.

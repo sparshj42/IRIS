@@ -36,13 +36,20 @@ import config
 # ═══════════════════════════════════════════════════════════════════════════════
 parser = argparse.ArgumentParser(description="IRIS pipeline")
 parser.add_argument("--image", default="data/test.png", help="input RGB image")
+parser.add_argument("--scene_dir", default=None,
+                    help="folder of images (multi-view); overrides --image")
 parser.add_argument("--sparse_depth", default=None,
                     help="optional .npy of (row, col, metric_depth) rows for scale recovery")
 parser.add_argument("--output_dir", default="output")
 parser.add_argument("--resume", action="store_true",
                     help="skip phases whose outputs already exist (crash recovery)")
 parser.add_argument("--skip_3d", action="store_true",
-                    help="skip per-object image-to-3D (TRELLIS); fused recon = VGGT scene")
+                    help="skip per-object image-to-3D; fused recon = VGGT scene")
+parser.add_argument("--image3d", choices=["trellis", "tigon", "amodal3r", "splattn", "wonder3d"], default="trellis",
+                    help="per-object 3D backend: image-only TRELLIS (default), text+image "
+                         "TIGON (Phase-A label as prompt), occlusion-aware AMODAL3R (SAM3 mask), "
+                         "or SPLATTN point-cloud completion (completes the VGGT partial in place, "
+                         "no registration)")
 parser.add_argument("--stop_after_peeling", action="store_true",
                     help="exit after Phase B (for fast removal A/B comparison)")
 args = parser.parse_args()
@@ -50,7 +57,18 @@ args = parser.parse_args()
 # per-output-dir so parallel runs (different --output_dir) don't collide
 RECORDS_PATH = os.path.join(args.output_dir, "object_records.pkl")
 
-IMAGE_PATH = args.image
+if args.scene_dir:
+    import glob as _glob
+    _exts = ('.png', '.jpg', '.jpeg', '.PNG', '.JPG', '.JPEG')
+    image_list = sorted(p for p in _glob.glob(os.path.join(args.scene_dir, "*"))
+                        if p.endswith(_exts))
+    if not image_list:
+        raise SystemExit(f"No images found in {args.scene_dir}")
+    IMAGE_PATH = image_list[0]
+else:
+    image_list = [args.image]
+    IMAGE_PATH = args.image
+
 OUTPUT_DIR = args.output_dir
 VIEWS_DIR = os.path.join(OUTPUT_DIR, "synthetic_views")
 MESH_DIR = os.path.join(OUTPUT_DIR, "meshes")
@@ -66,20 +84,82 @@ ROREM_NEG_PROMPT = "low quality, worst, bad proportions, blurry, extra finger, D
 
 VGGT_CONF_THRESHOLD = 0.5
 
-IRIS_LABEL_TO_ID = {"floor": 0, "wall": 1, "ceiling": 2, "platform": 3, "other": 4}
+# Semantic taxonomy. Phase E labels OBJECTS from the SAM3 instance masks + VLM
+# names (open-vocab, mapped down to these canonical classes) and BACKGROUND STUFF
+# (floor/wall/ceiling/...) from Mask2Former — instead of collapsing every object
+# into "other". This set is our own choice; remap CLASS_COLORS / NAME_TO_CLASS /
+# ADE20K_TO_IRIS to a fixed benchmark taxonomy (ScanNet-20, S3DIS-13) when grading.
+CLASS_COLORS = {                       # name -> RGB (0-1)
+    "floor":   [0.55, 0.40, 0.22],     # brown
+    "wall":    [0.80, 0.80, 0.80],     # light gray
+    "ceiling": [0.90, 0.90, 0.70],     # pale yellow
+    "window":  [0.60, 0.85, 0.95],     # pale cyan
+    "curtain": [0.70, 0.55, 0.85],     # lavender
+    "door":    [0.50, 0.35, 0.25],     # dark brown
+    "chair":   [0.90, 0.20, 0.20],     # red
+    "table":   [0.20, 0.45, 0.90],     # blue
+    "sofa":    [0.95, 0.45, 0.75],     # pink
+    "bed":     [0.55, 0.25, 0.60],     # purple
+    "cabinet": [0.85, 0.55, 0.20],     # orange
+    "shelf":   [0.95, 0.80, 0.25],     # gold
+    "screen":  [0.10, 0.70, 0.70],     # teal  (monitor/tv/laptop/phone)
+    "book":    [0.95, 0.35, 0.10],     # vermilion (book/folder/paper)
+    "box":     [0.40, 0.26, 0.13],     # umber
+    "bottle":  [0.20, 0.80, 0.40],     # green
+    "lamp":    [1.00, 0.95, 0.55],     # bright yellow
+    "bag":     [0.45, 0.30, 0.65],     # indigo
+    "appliance": [0.30, 0.55, 0.55],   # slate
+    "plant":   [0.25, 0.65, 0.25],     # leaf green
+    "tool":    [0.95, 0.75, 0.10],     # amber (hammer/screwdriver/wrench/...)
+    "other":   [0.55, 0.55, 0.55],     # neutral gray
+}
+IRIS_CLASSES = list(CLASS_COLORS.keys())
+IRIS_LABEL_TO_ID = {n: i for i, n in enumerate(IRIS_CLASSES)}
+LABEL_COLORS = {i: CLASS_COLORS[n] for n, i in IRIS_LABEL_TO_ID.items()}
+
+# ADE20K (Mask2Former) ids -> our STUFF classes only. Objects come from instances,
+# not from ADE, so we deliberately map only background structure here.
 ADE20K_TO_IRIS = {
-    3: "floor", 28: "floor", 54: "floor",
-    0: "wall", 8: "wall",
+    0: "wall", 1: "wall",
+    3: "floor", 28: "floor", 54: "floor", 78: "floor",
     5: "ceiling",
-    14: "platform", 15: "platform", 33: "platform",
+    8: "window",
+    18: "curtain",
+    14: "door",
 }
-LABEL_COLORS = {
-    0: [0.6, 0.4, 0.2],   # floor - brown
-    1: [0.8, 0.8, 0.8],   # wall - gray
-    2: [0.9, 0.9, 0.7],   # ceiling - light yellow
-    3: [0.2, 0.6, 0.9],   # platform - blue
-    4: [0.2, 0.8, 0.2],   # other - green
-}
+
+# VLM open-vocab name -> canonical class, by keyword (first match wins). Order
+# matters: more specific words before generic ones.
+_NAME_RULES = [
+    (("ceiling",), "ceiling"), (("floor", "rug", "carpet"), "floor"),
+    (("curtain", "drape", "blind"), "curtain"), (("window",), "window"),
+    (("door",), "door"), (("wall",), "wall"),
+    (("office chair", "chair", "stool", "seat"), "chair"),
+    (("desk", "table", "platform", "counter"), "table"),
+    (("sofa", "couch"), "sofa"), (("bed", "mattress"), "bed"),
+    (("bookshelf", "bookcase", "shelf", "rack"), "shelf"),
+    (("cabinet", "drawer", "nightstand", "wardrobe", "dresser"), "cabinet"),
+    (("monitor", "screen", "tv", "television", "laptop", "computer", "phone",
+      "mouse", "keyboard", "remote", "speaker", "tablet"), "screen"),
+    (("book", "folder", "paper", "magazine", "notebook", "document"), "book"),
+    (("box", "carton", "case", "toolbox", "container"), "box"),
+    (("bottle", "cup", "mug", "glass", "can", "jar", "vase"), "bottle"),
+    (("lamp", "light"), "lamp"),
+    (("bag", "backpack", "purse", "cloth", "towel"), "bag"),
+    (("hammer", "screwdriver", "wrench", "drill", "plier", "saw", "spanner",
+      "knife", "scissor", "tool"), "tool"),
+    (("plant", "flower", "tree"), "plant"),
+    (("fridge", "microwave", "oven", "fan", "heater", "appliance",
+      "printer", "machine"), "appliance"),
+]
+
+
+def name_to_class(name: str) -> str:
+    n = name.lower()
+    for keys, cls in _NAME_RULES:
+        if any(k in n for k in keys):
+            return cls
+    return "other"
 
 
 def free_cuda(*objs):
@@ -107,43 +187,101 @@ def metric_scale_from_sparse(world_points_v0, extr_v0, sparse_path, orig_hw):
     return float(np.median(z_metric[valid] / z_vggt[valid]))
 
 
-class TrellisWorker:
-    """Drives TRELLIS image->3D in the pinned `trellis` conda env (torch 2.4/cu118,
-    spconv, xformers) via a subprocess. Input: a white-bg object crop PNG. Output:
-    a point cloud (TRELLIS gaussian xyz)."""
+class Image3DWorker:
+    """Drives an image->3D model in its own pinned conda env via a persistent
+    subprocess speaking a line-based "@@" protocol. Input: a white-bg object crop
+    PNG (+ optional text label). Output: a point cloud (gaussian xyz).
 
-    def __init__(self):
+    Backends (all built on the TRELLIS gaussian decoder, same get_xyz contract):
+      - "trellis":  image-only TRELLIS-image-large, `trellis` env, cwd = repo root.
+      - "tigon"  :  text+image TIGON, `tigon` env, cwd = models/TIGON (its code uses
+                    relative ./mix_e2e_pipe and ./external paths). The object label
+                    from Phase A is passed as the text condition.
+      - "amodal3r": occlusion-aware Amodal3R (TRELLIS fork), runs in the `tigon` env
+                    (shares its deps). Takes the object's mask in addition to the
+                    crop; reconstructs the complete object, tolerating occlusion.
+    """
+
+    _CFG = {
+        "trellis":  dict(env="trellis",  script="src/trellis_worker.py",  cwd=None),
+        "tigon":    dict(env="tigon",    script="src/tigon_worker.py",    cwd=config.TIGON_DIR),
+        "amodal3r": dict(env="tigon",    script="src/amodal3r_worker.py", cwd=None),
+        # SplAttN is point-cloud completion (not image-to-3D): it completes an
+        # object's VGGT partial in place, so it has no register step. cwd is its
+        # repo so config_55 / models.SplAttN import.
+        "splattn":  dict(env="splattn",  script="src/splattn_worker.py",  cwd=config.SPLATTN_DIR),
+        # Wonder3D: cross-domain multi-view diffusion (6 ortho views) + visual-hull
+        # carve to a point cloud. cwd is its repo (relative ./mvdiffusion imports).
+        "wonder3d": dict(env="wonder3d", script="src/wonder3d_worker.py", cwd=config.WONDER3D_DIR),
+    }
+
+    def __init__(self, backend: str = "trellis"):
         import subprocess
         import tempfile
-        pybin = config.conda_env_python("trellis")
-        self.tmp = tempfile.mkdtemp(prefix="trellisworker_")
+        if backend not in self._CFG:
+            raise ValueError(f"unknown image3d backend {backend!r}; choose from {list(self._CFG)}")
+        cfg = self._CFG[backend]
+        self.backend = backend
+        pybin = config.conda_env_python(cfg["env"])
+        self.tmp = tempfile.mkdtemp(prefix=f"{backend}worker_")
         self.log = open(os.path.join(self.tmp, "worker.log"), "w")
         env = dict(os.environ, ATTN_BACKEND="xformers", SPCONV_ALGO="native")
+        # prepend the worker env's bin so its tools (e.g. ninja, needed by
+        # knn_cuda's JIT build for splattn) are found — the subprocess otherwise
+        # inherits the parent (iris) env's PATH, not the worker env's.
+        env["PATH"] = os.path.dirname(pybin) + os.pathsep + env.get("PATH", "")
+        # worker script path must be absolute since the worker may run from a
+        # different cwd (TIGON resolves ./external and ./mix_e2e_pipe relatively).
+        script = os.path.join(config.REPO_ROOT, cfg["script"])
         self.proc = subprocess.Popen(
-            [pybin, "-u", "src/trellis_worker.py"],
+            [pybin, "-u", script],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log,
-            text=True, bufsize=1, env=env,
+            text=True, bufsize=1, env=env, cwd=cfg["cwd"],
         )
         for line in self.proc.stdout:
             if line.strip() == "@@READY":
                 break
             if self.proc.poll() is not None:
-                raise RuntimeError("TRELLIS worker exited before READY; see " + self.log.name)
+                raise RuntimeError(f"{backend} worker exited before READY; see " + self.log.name)
 
-    def pointcloud(self, crop_path: str, n: int = 10000) -> np.ndarray:
+    def pointcloud(self, crop_path: str, n: int = 10000, text: str = "",
+                   mask_path: str = None) -> np.ndarray:
         import json
         out = os.path.join(self.tmp, "pc.npy")
-        self.proc.stdin.write(json.dumps({"image": crop_path, "out": out, "n": n}) + "\n")
+        # absolute paths so they resolve regardless of the worker's cwd
+        req = {"image": os.path.abspath(crop_path), "out": out, "n": n, "text": text}
+        if mask_path is not None:                       # amodal3r consumes the mask
+            req["mask"] = os.path.abspath(mask_path)
+        self.proc.stdin.write(json.dumps(req) + "\n")
         self.proc.stdin.flush()
         for line in self.proc.stdout:
             line = line.strip()
             if line.startswith("@@OK"):
                 return np.load(out)
             if line.startswith("@@ERR"):
-                raise RuntimeError("TRELLIS worker: " + line)
+                raise RuntimeError(f"{self.backend} worker: " + line)
             if self.proc.poll() is not None:
-                raise RuntimeError("TRELLIS worker died; see " + self.log.name)
-        raise RuntimeError("TRELLIS worker stdout closed unexpectedly")
+                raise RuntimeError(f"{self.backend} worker died; see " + self.log.name)
+        raise RuntimeError(f"{self.backend} worker stdout closed unexpectedly")
+
+    def complete(self, partial: np.ndarray, scene_up: np.ndarray) -> np.ndarray:
+        """SplAttN path: complete an object's VGGT partial in place (scene coords)."""
+        import json
+        pin = os.path.join(self.tmp, "partial.npy")
+        out = os.path.join(self.tmp, "completed.npy")
+        np.save(pin, partial.astype(np.float32))
+        req = {"partial": pin, "up": [float(x) for x in scene_up], "out": out}
+        self.proc.stdin.write(json.dumps(req) + "\n")
+        self.proc.stdin.flush()
+        for line in self.proc.stdout:
+            line = line.strip()
+            if line.startswith("@@OK"):
+                return np.load(out)
+            if line.startswith("@@ERR"):
+                raise RuntimeError(f"{self.backend} worker: " + line)
+            if self.proc.poll() is not None:
+                raise RuntimeError(f"{self.backend} worker died; see " + self.log.name)
+        raise RuntimeError(f"{self.backend} worker stdout closed unexpectedly")
 
     def close(self):
         try:
@@ -153,9 +291,8 @@ class TrellisWorker:
             self.proc.kill()
 
 
+# used for sparse-depth metric scaling in Phase C (first image's size)
 image = Image.open(IMAGE_PATH).convert("RGB")
-W, H = image.size
-print(f"Image loaded: {image.size}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PHASE A: OBJECT DISCOVERY (VLM)
@@ -167,14 +304,34 @@ print("=" * 60)
 # The 8B VLM is run in its own subprocess so the OS fully reclaims its ~16 GB
 # of VRAM on exit (device_map="auto" leaves accelerate hooks that don't free
 # cleanly in-process, which OOMs the multi-model Phase B that follows).
-if not (args.resume and os.path.exists("detected_objects.txt")):
-    import subprocess
-    step0 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "step0_vlm.py")
-    subprocess.run([sys.executable, step0, "--image", IMAGE_PATH,
-                    "--out", "detected_objects.txt"], check=True)
+import subprocess
+step0 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "step0_vlm.py")
 
-with open("detected_objects.txt") as f:
-    object_names = [l.strip() for l in f if l.strip()]
+
+def _freest_gpu():
+    """Pick the GPU with the most free memory, so the big VLM lands on a clear
+    card (this box has 8×H100; GPU 0 may be shared with other processes)."""
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"], text=True)
+        free = [int(x) for x in out.split()]
+        return str(int(np.argmax(free))) if free else "0"
+    except Exception:
+        return os.environ.get("CUDA_VISIBLE_DEVICES", "0")
+
+
+_vlm_env = dict(os.environ, CUDA_VISIBLE_DEVICES=_freest_gpu())
+print(f"  VLM ({config.VLM_ID}) on GPU {_vlm_env['CUDA_VISIBLE_DEVICES']}")
+_all_names = []
+for _img_path in image_list:
+    _stem = os.path.splitext(os.path.basename(_img_path))[0]
+    _det_file = os.path.join(OUTPUT_DIR, f"detected_{_stem}.txt")
+    if not (args.resume and os.path.exists(_det_file)):
+        subprocess.run([sys.executable, step0, "--image", _img_path,
+                        "--out", _det_file], check=True, env=_vlm_env)
+    with open(_det_file) as _f:
+        _all_names.extend(l.strip() for l in _f if l.strip())
+object_names = list(dict.fromkeys(_all_names))   # union, preserve order, deduplicate
 print(f"Object types: {object_names}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -206,6 +363,9 @@ if not RESUME_B:
     rorem_pipe.unet = rorem_unet
     rorem_pipe = rorem_pipe.to("cuda")
     print("Loaded SAM3 + DepthAnything + RORem")
+
+# W, H used later only for sparse-depth (single-image); multi-image uses first image
+W, H = image.size
 
 
 def segment(img: Image.Image, prompt_names: list) -> list:
@@ -290,7 +450,24 @@ def consolidate_instances(instances: list, img_area: int) -> list:
                     groups += 1
             if len(small) > 1:
                 print(f"  '{label}': {len(small)} small instances -> {groups} clustered group(s)")
-    return result
+
+    # Cross-label NMS: the VLM names the same object differently across images
+    # ("blue bottle" vs "blue water bottle", "black mouse" vs "gray mouse"), and
+    # those synonyms are all prompted on every image — so the same physical object
+    # gets segmented multiple times under different labels. Geometry settles it:
+    # if two detections cover the same pixels, they are one object — keep the
+    # highest-scoring, drop the rest. (Mask geometry, so no name matching needed.)
+    XLABEL_IOU = 0.5
+    result = sorted(result, key=lambda x: -x["score"])
+    deduped = []
+    for inst in result:
+        dup_of = next((k for k in deduped if mask_iou(inst["mask"], k["mask"]) > XLABEL_IOU), None)
+        if dup_of is None:
+            deduped.append(inst)
+        elif inst["label"] != dup_of["label"]:
+            print(f"  cross-label dup: '{inst['label']}' ≈ '{dup_of['label']}' "
+                  f"(IoU>{XLABEL_IOU}) — dropped")
+    return deduped
 
 
 def get_depth_map(img: Image.Image) -> np.ndarray:
@@ -314,6 +491,116 @@ def recover_metric_scale(depth_rel: np.ndarray, sparse_path: str) -> np.ndarray:
     (s, t), *_ = np.linalg.lstsq(A, z, rcond=None)
     print(f"  Scale recovery: scale={s:.4f}, shift={t:.4f} from {len(z)} sparse points")
     return s * depth_rel + t
+
+
+def build_occlusion_order(instances, depth_map, band_px=6, margin_frac=0.04):
+    """Front-to-back peel order via a pairwise occlusion graph + topological sort.
+
+    Peeling must remove an occluder *before* what it hides, so the ordering
+    question is fundamentally pairwise (who is in front of whom *where they
+    meet*) — not a global depth sort. DepthAnythingV2 outputs DISPARITY
+    (higher = nearer), verified empirically.
+
+    For each adjacent mask pair we compare the median disparity in their shared
+    contact band (sampled just *inside* each, away from the unreliable border):
+    the nearer side there is the occluder → directed edge occluder→occluded.
+    Two extra signals: a physical-support edge (a small object resting in
+    another's footprint is peeled first), and, when no edge is decisive,
+    objects fall back to their global nearest-point disparity. A topological
+    sort then yields the peel order; cycles from boundary noise are broken at
+    their weakest (smallest-margin) edge.
+
+    Returns instances reordered front (peel first) → back.
+    """
+    n = len(instances)
+    if n <= 1:
+        return list(instances)
+
+    H, W = depth_map.shape
+    spread = float(np.percentile(depth_map, 95) - np.percentile(depth_map, 5)) + 1e-9
+    tau = margin_frac * spread                      # min disparity gap to call an edge
+    masks = [inst["mask"] > 0.5 for inst in instances]
+    k = np.ones((2 * band_px + 1, 2 * band_px + 1), np.uint8)
+    dil = [cv2.dilate(m.astype(np.uint8), k) > 0 for m in masks]
+    ero = [cv2.erode(m.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0 for m in masks]
+
+    centroid_y = [float(np.where(m)[0].mean()) if m.sum() else 0.0 for m in masks]
+
+    def rests_on(ai, bi):
+        """a rests ON TOP of b: a is smaller, makes REAL mask contact with b
+        (not mere bbox overlap), and the contact is at/below a's centre
+        (gravity — a sits above where it touches b)."""
+        am, bm = masks[ai], masks[bi]
+        if am.sum() == 0 or bm.sum() == 0 or am.sum() >= bm.sum():
+            return False
+        contact = dil[ai] & bm
+        if contact.sum() < max(12, 0.05 * np.sqrt(am.sum())):
+            return False
+        return float(np.where(contact)[0].mean()) >= centroid_y[ai]
+
+    # edges[a].add(b)  ==  "a occludes b, peel a first"; weight = decision margin
+    edges = {i: set() for i in range(n)}
+    weight = {}
+    for a in range(n):
+        for b in range(a + 1, n):
+            # contact band: a's interior touching b, and b's interior touching a
+            a_band = ero[a] & dil[b]
+            b_band = ero[b] & dil[a]
+            occ = None
+            if a_band.sum() >= 8 and b_band.sum() >= 8:
+                da = float(np.median(depth_map[a_band]))
+                db = float(np.median(depth_map[b_band]))
+                if abs(da - db) >= tau:                       # decisive depth call
+                    occ, hid, w, why = ((a, b, abs(da - db), "depth") if da > db
+                                        else (b, a, abs(da - db), "depth"))
+            if occ is None:                                   # depth indecisive → support tiebreak
+                if rests_on(a, b):
+                    occ, hid, w, why = a, b, tau, "support"
+                elif rests_on(b, a):
+                    occ, hid, w, why = b, a, tau, "support"
+            if occ is not None:
+                edges[occ].add(hid)
+                weight[(occ, hid)] = w
+                if os.environ.get("IRIS_DEBUG_OCCLUSION"):
+                    print(f"    edge: {instances[occ]['uid']} -> {instances[hid]['uid']} "
+                          f"({why}, w={w:.1f})")
+
+    # Kahn topological sort; ties + free choices broken by nearest-point disparity
+    nearest = {i: inst["nearest"] for i, inst in enumerate(instances)}
+    indeg = {i: 0 for i in range(n)}
+    for a in edges:
+        for b in edges[a]:
+            indeg[b] += 1
+
+    order = []
+    avail = [i for i in range(n) if indeg[i] == 0]
+    placed = set()
+    while len(order) < n:
+        if not avail:                               # cycle: drop weakest remaining edge
+            rem = [(weight[(a, b)], a, b) for a in edges for b in edges[a]
+                   if a not in placed and b not in placed]
+            if not rem:
+                avail = [i for i in range(n) if i not in placed]
+            else:
+                _, a, b = min(rem)
+                edges[a].discard(b)
+                indeg[b] -= 1
+                if indeg[b] == 0:
+                    avail.append(b)
+                continue
+        # among available, peel the nearest (highest disparity) first
+        avail.sort(key=lambda i: nearest[i], reverse=True)
+        cur = avail.pop(0)
+        if cur in placed:
+            continue
+        order.append(cur)
+        placed.add(cur)
+        for b in edges[cur]:
+            indeg[b] -= 1
+            if indeg[b] == 0 and b not in placed:
+                avail.append(b)
+
+    return [instances[i] for i in order]
 
 
 def remove_object(img: Image.Image, mask: np.ndarray) -> Image.Image:
@@ -362,14 +649,23 @@ def remove_object(img: Image.Image, mask: np.ndarray) -> Image.Image:
     return Image.fromarray(out.clip(0, 255).astype(np.uint8))
 
 
-def build_object_crop(img: Image.Image, mask: np.ndarray) -> Image.Image:
-    """Masked object on a white background, cropped to its bbox (+pad), 512x512 —
-    the input to TRELLIS image-to-3D (blueprint: fresh mask → image-to-3D)."""
+def build_object_crop(img: Image.Image, mask: np.ndarray):
+    """Masked object on a white background, cropped to its bbox (+pad) and
+    letterboxed into a square at 512x512 — the input to image-to-3D. Returns
+    (crop, mask_crop): the RGB crop and the letterboxed SAM3 mask (L, 0/255) in
+    the same frame, so occlusion-aware backends (Amodal3R) get the exact object
+    region without re-deriving it from the white background (which would drop
+    white object parts, e.g. a white bottle cap).
+
+    The square padding is essential: a direct resize to 512x512 squishes a
+    non-square bbox (e.g. a tall bottle, 2.4:1) into a square, and the image-to-3D
+    model then reconstructs the distorted proportions. Padding to a square first
+    preserves the object's true aspect ratio."""
     mask_binary = (mask > 0.5).astype(np.uint8)
     rows = np.any(mask_binary, axis=1)
     cols = np.any(mask_binary, axis=0)
     if not rows.any():
-        return None
+        return None, None
     rmin, rmax = np.where(rows)[0][[0, -1]]
     cmin, cmax = np.where(cols)[0][[0, -1]]
     pad = 20
@@ -377,157 +673,171 @@ def build_object_crop(img: Image.Image, mask: np.ndarray) -> Image.Image:
     cmin, cmax = max(0, cmin - pad), min(img.size[0], cmax + pad)
     img_np = np.array(img).copy()
     img_np[mask_binary == 0] = 255
-    return Image.fromarray(img_np[rmin:rmax, cmin:cmax]).resize((512, 512))
+    crop = img_np[rmin:rmax, cmin:cmax]
+    mcrop = (mask_binary[rmin:rmax, cmin:cmax] * 255).astype(np.uint8)
+    # letterbox both into a square canvas (preserve aspect ratio), then resize
+    h, w = crop.shape[:2]
+    side = max(h, w)
+    canvas = np.full((side, side, 3), 255, dtype=np.uint8)
+    mcanvas = np.zeros((side, side), dtype=np.uint8)
+    y0, x0 = (side - h) // 2, (side - w) // 2
+    canvas[y0:y0 + h, x0:x0 + w] = crop
+    mcanvas[y0:y0 + h, x0:x0 + w] = mcrop
+    crop_img = Image.fromarray(canvas).resize((512, 512))
+    mask_img = Image.fromarray(mcanvas).resize((512, 512), Image.NEAREST)
+    return crop_img, mask_img
 
 
 if RESUME_B:
     with open(RECORDS_PATH, "rb") as f:
-        object_records = pickle.load(f)
-    view_paths = [IMAGE_PATH] + sorted(
-        os.path.join(VIEWS_DIR, f) for f in os.listdir(VIEWS_DIR) if f.endswith(".png"))
+        _saved = pickle.load(f)
+    if isinstance(_saved, dict):
+        object_records = _saved["records"]
+        view_paths = _saved["view_paths"]
+    else:
+        # backward compat: old single-image format (plain list)
+        object_records = _saved
+        view_paths = [IMAGE_PATH] + sorted(
+            os.path.join(VIEWS_DIR, fp) for fp in os.listdir(VIEWS_DIR) if fp.endswith(".png"))
     print(f"[resume] {len(object_records)} object records, {len(view_paths)} views")
 else:
     # Clear stale synthetic views from previous runs — but never when resuming
     # from a peel checkpoint, whose saved views ARE the restore state
-    if not (args.resume and os.path.exists(os.path.join(OUTPUT_DIR, "peel_ckpt.pkl"))):
-        for d in (VIEWS_DIR, CROPS_DIR):
-            for f in os.listdir(d):
-                if f.endswith(".png"):
-                    os.remove(os.path.join(d, f))
-
-    # ── Initial segmentation + depth ordering ────────────────────────────────
-    print("\nInitial segmentation...")
-    instances = segment(image, object_names)
-    instances = consolidate_instances(instances, H * W)
-    # Unique id per instance so duplicates ("chairs" x2) are peeled separately
-    label_counts = {}
-    for inst in instances:
-        label_counts[inst["label"]] = label_counts.get(inst["label"], 0) + 1
-        n = label_counts[inst["label"]]
-        inst["uid"] = inst["label"] if n == 1 else f"{inst['label']} {n}"
-    print(f"Created {len(instances)} instance masks")
-
-    print("Computing depth map...")
-    depth_map = get_depth_map(image)
-    if args.sparse_depth:
-        depth_map = recover_metric_scale(depth_map, args.sparse_depth)
-    np.save("depth_map.npy", depth_map)
-
-    # DepthAnything outputs disparity-like values: HIGHER = CLOSER.
-    # Nearest point of each instance = max over its mask; peel largest first.
-    for inst in instances:
-        mb = inst["mask"] > 0.5
-        inst["nearest"] = depth_map[mb].max() if mb.sum() > 0 else -np.inf
-    sorted_instances = sorted(instances, key=lambda x: x["nearest"], reverse=True)
-
-    # Support-aware reordering: an object resting ON or inside another (mask mostly
-    # within the other's bbox, and smaller) must be peeled BEFORE its support —
-    # otherwise the inpainter is forced to hallucinate a surface under the
-    # still-unmasked supported object (e.g. blocks on the table).
-    def rests_on(a, b):
-        am, bm = a["mask"] > 0.5, b["mask"] > 0.5
-        if am.sum() == 0 or bm.sum() == 0 or am.sum() >= bm.sum():
-            return False
-        ys, xs = np.where(bm)
-        inside = am[ys.min():ys.max() + 1, xs.min():xs.max() + 1].sum()
-        return inside / am.sum() > 0.7
-
-    changed = True
-    while changed:
-        changed = False
-        for i in range(len(sorted_instances)):
-            for j in range(i):
-                if rests_on(sorted_instances[i], sorted_instances[j]):
-                    sorted_instances.insert(j, sorted_instances.pop(i))
-                    changed = True
-                    break
-            if changed:
-                break
-
-    print("Peeling order (nearest first, supported objects before supports):")
-    for i, inst in enumerate(sorted_instances, 1):
-        print(f"  {i}. {inst['uid']} (nearest-point disparity: {inst['nearest']:.3f})")
-
-    # ── Iterative occlusion peeling ──────────────────────────────────────────
-    # Checkpoint after EVERY object so a machine crash mid-peel only costs the
-    # object in flight: --resume restores the image state from the last saved
-    # view and skips already-peeled objects (segmentation/depth are
-    # deterministic, so the peel order reproduces identically).
-    print("\nIterative occlusion peeling...")
     PEEL_CKPT = os.path.join(OUTPUT_DIR, "peel_ckpt.pkl")
-    current_image = image.copy()
-    view_paths = [IMAGE_PATH]            # view 0 = original image
-    object_records = []                  # (uid, view_idx of the fresh mask, mask, local pc)
-    done_uids = set()
+    if not (args.resume and os.path.exists(PEEL_CKPT)):
+        for d in (VIEWS_DIR, CROPS_DIR):
+            for fp in os.listdir(d):
+                if fp.endswith(".png"):
+                    os.remove(os.path.join(d, fp))
+
+    PEEL_CKPT = os.path.join(OUTPUT_DIR, "peel_ckpt.pkl")
+    view_paths = []
+    object_records = []
+    # peel checkpoint tracks progress across images
+    _done_img_idx = 0
+    _done_uids_by_img = {}   # img_idx -> set of peeled uids
+    _ckpt_view_paths = None
     if args.resume and os.path.exists(PEEL_CKPT):
         with open(PEEL_CKPT, "rb") as f:
             _ck = pickle.load(f)
-        done_uids = set(_ck["done_uids"])
+        _done_img_idx = _ck.get("done_img_idx", 0)
+        _done_uids_by_img = _ck.get("done_uids_by_img", {})
         view_paths = _ck["view_paths"]
         object_records = _ck["records"]
-        current_image = Image.open(view_paths[-1]).convert("RGB")
-        print(f"[resume] peel checkpoint: {len(done_uids)} object(s) already peeled")
+        _ckpt_view_paths = view_paths
+        print(f"[resume] peel checkpoint: img {_done_img_idx}/{len(image_list)}, "
+              f"{sum(len(v) for v in _done_uids_by_img.values())} object(s) peeled")
 
-    for idx, inst in enumerate(sorted_instances):
-        uid = inst["uid"]
-        if uid in done_uids:
-            print(f"\n  Peeling [{idx+1}/{len(sorted_instances)}]: {uid} [resume: already done]")
+    for img_idx, img_path in enumerate(image_list):
+        img_stem = os.path.splitext(os.path.basename(img_path))[0]
+
+        if img_idx < _done_img_idx:
+            print(f"\n[img {img_idx+1}/{len(image_list)}] {img_stem} [resume: already done]")
             continue
-        print(f"\n  Peeling [{idx+1}/{len(sorted_instances)}]: {uid}")
 
-        # Re-evaluate mask on the CURRENT image state (blueprint step 3a),
-        # matching the right instance by IoU with the initial mask
-        fresh = segment(current_image, [inst["label"]])
-        mask, best_iou = inst["mask"], 0.0
-        if inst.get("merged") and fresh:
-            # merged instance (e.g. all blocks): compare against the fresh union
-            union = np.zeros_like(fresh[0]["mask"])
-            for f in fresh:
-                union = np.maximum(union, f["mask"])
-            iou = mask_iou(union, inst["mask"])
-            if iou > best_iou:
-                mask, best_iou = union, iou
-        else:
-            for f in fresh:
-                iou = mask_iou(f["mask"], inst["mask"])
+        print(f"\n{'='*60}")
+        print(f"[img {img_idx+1}/{len(image_list)}] Peeling: {img_stem}")
+        print(f"{'='*60}")
+
+        cur_img = Image.open(img_path).convert("RGB")
+        cur_H, cur_W = np.array(cur_img).shape[:2]
+
+        # ── Initial segmentation + depth ordering ────────────────────────────
+        print("\nInitial segmentation...")
+        instances = segment(cur_img, object_names)
+        instances = consolidate_instances(instances, cur_H * cur_W)
+        label_counts = {}
+        for inst in instances:
+            label_counts[inst["label"]] = label_counts.get(inst["label"], 0) + 1
+            n = label_counts[inst["label"]]
+            inst["uid"] = inst["label"] if n == 1 else f"{inst['label']} {n}"
+        print(f"Created {len(instances)} instance masks")
+
+        print("Computing depth map...")
+        depth_map = get_depth_map(cur_img)
+        if args.sparse_depth and img_idx == 0:
+            depth_map = recover_metric_scale(depth_map, args.sparse_depth)
+        np.save(os.path.join(OUTPUT_DIR, f"depth_map_{img_stem}.npy"), depth_map)
+
+        for inst in instances:
+            mb = inst["mask"] > 0.5
+            inst["nearest"] = depth_map[mb].max() if mb.sum() > 0 else -np.inf
+        sorted_instances = build_occlusion_order(instances, depth_map)
+
+        print("Peeling order (occlusion graph + topological sort, front first):")
+        for i, inst in enumerate(sorted_instances, 1):
+            print(f"  {i}. {inst['uid']} (nearest-point disparity: {inst['nearest']:.3f})")
+
+        # ── Iterative occlusion peeling ──────────────────────────────────────
+        print("\nIterative occlusion peeling...")
+        # base view for this image (view_paths may already contain prior images)
+        view_paths.append(img_path)
+        current_image = cur_img.copy()
+        done_uids = set(_done_uids_by_img.get(img_idx, set()))
+        # if resuming mid-image, restore current image state from last saved view
+        if done_uids and _ckpt_view_paths:
+            current_image = Image.open(view_paths[-1]).convert("RGB")
+
+        for idx, inst in enumerate(sorted_instances):
+            uid = inst["uid"]
+            if uid in done_uids:
+                print(f"\n  Peeling [{idx+1}/{len(sorted_instances)}]: {uid} [resume: already done]")
+                continue
+            print(f"\n  Peeling [{idx+1}/{len(sorted_instances)}]: {uid}")
+
+            fresh = segment(current_image, [inst["label"]])
+            mask, best_iou = inst["mask"], 0.0
+            if inst.get("merged") and fresh:
+                union = np.zeros_like(fresh[0]["mask"])
+                for f in fresh:
+                    union = np.maximum(union, f["mask"])
+                iou = mask_iou(union, inst["mask"])
                 if iou > best_iou:
-                    mask, best_iou = f["mask"], iou
-        if best_iou >= 0.3:
-            print(f"    Fresh mask from current image state (IoU {best_iou:.2f})")
-        else:
-            mask = inst["mask"]
-            print("    Re-detection mismatch; using initial mask")
+                    mask, best_iou = union, iou
+            else:
+                for f in fresh:
+                    iou = mask_iou(f["mask"], inst["mask"])
+                    if iou > best_iou:
+                        mask, best_iou = f["mask"], iou
+            if best_iou >= 0.3:
+                print(f"    Fresh mask from current image state (IoU {best_iou:.2f})")
+            else:
+                mask = inst["mask"]
+                print("    Re-detection mismatch; using initial mask")
 
-        # Image-to-3D with the fresh mask (blueprint step 3b): defer to Phase B2.
-        # Save the object crop; TRELLIS turns it into a point cloud later.
-        if not args.skip_3d:
-            crop = build_object_crop(current_image, mask)
-            if crop is not None:
-                i = len(object_records)            # crop i ↔ object_records[i]
-                crop.save(os.path.join(CROPS_DIR, f"{i:02d}.png"))
-                # view index of the state this mask was computed on = len(view_paths) - 1
-                object_records.append((uid, len(view_paths) - 1,
-                                       (mask > 0.5).astype(np.uint8), None))
-                print("    Saved object crop for deferred TRELLIS 3D")
+            # Always record the instance mask (uid + view + mask) — Phase E uses it
+            # to label points by object. The crop / image-to-3D work stays gated.
+            record_mask = (mask > 0.5).astype(np.uint8)
+            if not args.skip_3d:
+                crop, crop_mask = build_object_crop(current_image, mask)
+                if crop is not None:
+                    i = len(object_records)
+                    crop.save(os.path.join(CROPS_DIR, f"{i:02d}.png"))
+                    crop_mask.save(os.path.join(CROPS_DIR, f"{i:02d}_mask.png"))
+                    print("    Saved object crop (+SAM3 mask) for deferred image-to-3D")
+            object_records.append((uid, len(view_paths) - 1, record_mask, None))
 
-        # Object removal revealing what's behind (blueprint step 3c)
-        current_image = remove_object(current_image, mask)
-        view_path = os.path.join(VIEWS_DIR, f"view_{idx+1:02d}_{uid.replace(' ', '_')}.png")
-        current_image.save(view_path)
-        view_paths.append(view_path)
-        print(f"    Saved synthetic view: {view_path}")
+            current_image = remove_object(current_image, mask)
+            view_path = os.path.join(
+                VIEWS_DIR, f"{img_stem}_view_{idx+1:02d}_{uid.replace(' ', '_')}.png")
+            current_image.save(view_path)
+            view_paths.append(view_path)
+            print(f"    Saved synthetic view: {view_path}")
 
-        # crash checkpoint: persist progress after every object
-        done_uids.add(uid)
-        with open(PEEL_CKPT, "wb") as f:
-            pickle.dump({"done_uids": list(done_uids), "view_paths": view_paths,
-                         "records": object_records}, f)
+            done_uids.add(uid)
+            _done_uids_by_img[img_idx] = done_uids
+            with open(PEEL_CKPT, "wb") as f:
+                pickle.dump({"done_img_idx": img_idx, "done_uids_by_img": _done_uids_by_img,
+                             "view_paths": view_paths, "records": object_records}, f)
+
+        print(f"\nPeeled {img_stem}: {len(sorted_instances)} objects")
+        _done_img_idx = img_idx + 1
 
     print(f"\nPeeling complete: {len(view_paths)} views, {len(object_records)} object point clouds")
     with open(RECORDS_PATH, "wb") as f:
-        pickle.dump([(n, v, m, p) for n, v, m, p in object_records], f)
+        pickle.dump({"records": object_records, "view_paths": view_paths}, f)
     if os.path.exists(PEEL_CKPT):
-        os.remove(PEEL_CKPT)   # full record saved; per-object checkpoint no longer needed
+        os.remove(PEEL_CKPT)
 
     free_cuda(sam3_model, sam3_processor, depth_model, depth_processor, rorem_pipe)
 
@@ -537,29 +847,42 @@ if args.stop_after_peeling:
     sys.exit(0)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PHASE B2: DEFERRED IMAGE-TO-3D (TRELLIS)
-# Runs after the iris-env models are freed, so the ~8-10 GB TRELLIS worker has the
-# GPU to itself. Resumable: each object's point cloud is checkpointed into the
-# records file, so a crash only costs the object in flight.
+# PHASE B2: DEFERRED IMAGE-TO-3D (TRELLIS or TIGON)
+# Runs after the iris-env models are freed, so the ~8-10 GB worker has the GPU to
+# itself. Resumable: each object's point cloud is checkpointed into the records
+# file, so a crash only costs the object in flight. With --image3d tigon, the
+# object's Phase-A label is passed as a text prompt (TIGON is text+image cond).
 # ═══════════════════════════════════════════════════════════════════════════════
-if not args.skip_3d:
-    need = [i for i, rec in enumerate(object_records) if rec[3] is None]
+# SPLATTN is point-cloud completion, not image-to-3D — it runs in Phase D on the
+# VGGT partials, so skip the per-object image-to-3D worker here.
+if not args.skip_3d and args.image3d != "splattn":
+    # records without a saved crop (object too small to crop) carry no image-to-3D;
+    # they still get an instance mask for Phase E labeling, just skip them here.
+    need = [i for i, rec in enumerate(object_records) if rec[3] is None
+            and os.path.exists(os.path.join(CROPS_DIR, f"{i:02d}.png"))]
     if need:
+        backend = args.image3d
         print("\n" + "=" * 60)
-        print(f"[Phase B2] TRELLIS image-to-3D for {len(need)} object(s)")
+        print(f"[Phase B2] {backend.upper()} image-to-3D for {len(need)} object(s)")
         print("=" * 60)
         object_records = list(object_records)
-        trellis = TrellisWorker()
+        worker = Image3DWorker(backend)
         try:
             for i in need:
                 uid, vi, m, _ = object_records[i]
-                pc = trellis.pointcloud(os.path.join(CROPS_DIR, f"{i:02d}.png"))
+                # uid is the Phase-A object label (e.g. "purple water bottle");
+                # TIGON conditions on it as a text prompt, TRELLIS ignores it.
+                # amodal3r additionally consumes the SAM3 mask (saved alongside).
+                mask_path = (os.path.join(CROPS_DIR, f"{i:02d}_mask.png")
+                             if backend in ("amodal3r", "wonder3d") else None)
+                pc = worker.pointcloud(os.path.join(CROPS_DIR, f"{i:02d}.png"),
+                                       text=uid, mask_path=mask_path)
                 object_records[i] = (uid, vi, m, pc)
                 with open(RECORDS_PATH, "wb") as f:
                     pickle.dump(object_records, f)   # checkpoint after each object
-                print(f"  {uid}: TRELLIS point cloud {pc.shape}")
+                print(f"  {uid}: {backend} point cloud {pc.shape}")
         finally:
-            trellis.close()
+            worker.close()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PHASE C: MULTI-VIEW SCENE RECONSTRUCTION (VGGT)
@@ -627,24 +950,126 @@ import open3d as o3d
 scene_diag = np.linalg.norm(scene_pc.max(0) - scene_pc.min(0))
 
 
-def register_object(obj_pc: np.ndarray, target_pts: np.ndarray) -> np.ndarray:
-    """Scale+centroid init from mask-region scene points, then ICP refine."""
-    src_diag = np.linalg.norm(obj_pc.max(0) - obj_pc.min(0))
-    tgt_diag = np.linalg.norm(target_pts.max(0) - target_pts.min(0))
-    scale = tgt_diag / max(src_diag, 1e-8)
-    init = obj_pc * scale + (target_pts.mean(0) - obj_pc.mean(0) * scale)
+def _R_axis_angle(axis: np.ndarray, ang: float) -> np.ndarray:
+    """Rotation matrix for `ang` radians about unit `axis` (Rodrigues)."""
+    a = axis / (np.linalg.norm(axis) + 1e-9)
+    K = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]], [-a[1], a[0], 0]])
+    return np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * (K @ K)
 
-    src = o3d.geometry.PointCloud()
-    src.points = o3d.utility.Vector3dVector(init)
-    tgt = o3d.geometry.PointCloud()
-    tgt.points = o3d.utility.Vector3dVector(target_pts)
-    threshold = 0.05 * scene_diag
-    reg = o3d.pipelines.registration.registration_icp(
-        src, tgt, threshold, np.eye(4),
-        o3d.pipelines.registration.TransformationEstimationPointToPoint())
-    src.transform(reg.transformation)
-    print(f"    ICP fitness: {reg.fitness:.3f}, RMSE: {reg.inlier_rmse:.4f}")
-    return np.asarray(src.points)
+
+def _R_align(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Rotation aligning unit vector a onto unit vector b."""
+    a = a / (np.linalg.norm(a) + 1e-9)
+    b = b / (np.linalg.norm(b) + 1e-9)
+    v = np.cross(a, b)
+    c = float(np.dot(a, b))
+    s = np.linalg.norm(v)
+    if s < 1e-9:                                   # parallel or antiparallel
+        return np.eye(3) if c > 0 else _R_axis_angle(np.array([1.0, 0, 0]), np.pi)
+    K = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    return np.eye(3) + K + K @ K * ((1 - c) / (s * s))
+
+
+def scene_up_vector(scene_pc: np.ndarray):
+    """Gravity/up direction from the dominant (floor) plane of the scene, oriented
+    to point from the floor toward the scene body, plus the floor height along
+    that axis (so objects can be rested on the floor). Falls back to +Z."""
+    try:
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(scene_pc)
+        plane, inliers = pcd.segment_plane(0.02 * scene_diag, 3, 200)
+        n = np.asarray(plane[:3], float)
+        n /= (np.linalg.norm(n) + 1e-9)
+        floor_c = scene_pc[inliers].mean(0)
+        if np.dot(n, scene_pc.mean(0) - floor_c) < 0:
+            n = -n
+        floor_h = float(np.median(scene_pc[inliers] @ n))   # floor level along up
+        return n, floor_h
+    except Exception:
+        return np.array([0.0, 0.0, 1.0]), float(np.percentile(scene_pc[:, 2], 5))
+
+
+def register_object(obj_pc: np.ndarray, target_pts: np.ndarray,
+                    scene_up: np.ndarray, floor_h: float = None) -> np.ndarray:
+    """Pose a complete generated object so its visible surface coincides with the
+    observed scene points (`target_pts`) — i.e. the object is dropped in as an
+    *extension* of the existing segment, completing the occluded geometry.
+
+    The previous version compared the full object's bbox diagonal to the diagonal
+    of the partial visible patch (shrinking the object) and ran symmetric ICP from
+    the object's canonical pose (wrong orientation). This version instead:
+      1. trims observed outliers (mask bleed / depth noise);
+      2. fixes scale from the patch's lateral extent (below);
+      3. tilts the canonical object so its up-axis matches scene gravity (the floor
+         normal), fixing 2 of 3 rotation DoF;
+      4. searches the remaining yaw about the up-axis (24 angles), and at each yaw
+         slides the object (translation-only ICP) so observed points land on its
+         surface; keeps the yaw with the smallest observed→object residual.
+    The chosen pose minimizes the observed→object distance (every observed point
+    lands on the object surface).
+
+    Two design choices keep it from cheating:
+      - Scale is fixed BEFORE refine from the observed patch's lateral extent (its
+        two largest principal spreads; the depth spread of the thin front shell is
+        unreliable). Letting ICP also solve scale lets it shrink the object to
+        nestle inside the patch.
+      - The refine is translation + yaw only. Gravity fixes the tilt; a full-SO(3)
+        ICP would tip the object over to nestle into the partial segment."""
+    from scipy.spatial import cKDTree
+
+    # trim observed outliers (mask bleed onto neighbours, VGGT depth noise) that
+    # would inflate the scale estimate and drag the fit — keep points within a
+    # robust radius of the median.
+    med = np.median(target_pts, axis=0)
+    rad = np.linalg.norm(target_pts - med, axis=1)
+    keep = rad < (np.median(rad) + 2.5 * (np.median(np.abs(rad - np.median(rad))) + 1e-9))
+    if keep.sum() >= 50:
+        target_pts = target_pts[keep]
+
+    def _spread(P):                                 # principal std (descending)
+        w = np.linalg.eigvalsh(np.cov((P - P.mean(0)).T))
+        return np.sqrt(np.clip(w, 0, None))[::-1]
+    te, oe = _spread(target_pts), _spread(obj_pc)
+    s0 = (te[0] + te[1]) / max(oe[0] + oe[1], 1e-8)  # match the two lateral axes
+
+    obj_c = (obj_pc - obj_pc.mean(0)) * s0           # scaled, centered object
+    tgt_mean = target_pts.mean(0)
+    R_tilt = _R_align(np.array([0.0, 0.0, 1.0]), scene_up)   # canonical +Z → gravity
+
+    best = None   # (resid, aligned_pts)
+    for yaw in np.linspace(0, 2 * np.pi, 24, endpoint=False):
+        R0 = _R_axis_angle(scene_up, yaw) @ R_tilt
+        src = obj_c @ R0.T + tgt_mean
+        # translation-only asymmetric ICP: slide the (upright) object so observed
+        # points land on its surface — never re-rotates, so tilt stays gravity-true
+        for _ in range(10):
+            tree = cKDTree(src)
+            _, idx = tree.query(target_pts)
+            src = src - (src[idx] - target_pts).mean(0)
+        resid = cKDTree(src).query(target_pts)[0].mean()
+        if best is None or resid < best[0]:
+            best = (resid, src)
+
+    aligned = best[1]
+
+    # Floor contact: tabletop objects rest on the floor, but the visible segment
+    # (and a slightly squat generated object) often leaves the base floating just
+    # above it — e.g. the bottle's diameter is right but it doesn't reach the
+    # ground. Stretch the object along the up-axis, anchored at its observed top,
+    # so the base touches the floor — extends height, preserves lateral size.
+    if floor_h is not None:
+        h = aligned @ scene_up
+        top_h, base_h = np.percentile(h, 98), np.percentile(h, 2)
+        height = top_h - base_h
+        gap = base_h - floor_h
+        if height > 1e-6 and 0 < gap < 0.6 * height:      # floating just above floor
+            factor = (top_h - floor_h) / (top_h - base_h)
+            new_h = top_h - (top_h - h) * factor
+            aligned = aligned + (new_h - h)[:, None] * scene_up
+            print(f"    floor contact: stretched base to floor (gap {gap/scene_diag:.4f} → 0)")
+
+    print(f"    fit-to-segment: weld residual {best[0] / scene_diag:.4f} (scene-rel)")
+    return aligned
 
 
 FUSED_PATH = os.path.join(OUTPUT_DIR, "fused_pointcloud.npy")
@@ -658,18 +1083,56 @@ if args.resume and os.path.exists(FUSED_PATH) and os.path.getmtime(FUSED_PATH) >
 else:
     fused = [scene_pc]
     registered_objects = []   # per-object registered clouds, for occupancy solidification
-    for obj_name, view_idx, mask, obj_pc in object_records:
-        print(f"\n  Registering: {obj_name} (view {view_idx})")
-        mask_v = cv2.resize(mask, (Wv, Hv), interpolation=cv2.INTER_NEAREST) > 0.5
-        valid = mask_v & scene_mask[view_idx]
-        target_pts = world_points[view_idx][valid]
-        if len(target_pts) < 50:
-            print(f"    Only {len(target_pts)} mask points in scene, skipping registration")
-            continue
-        aligned = register_object(obj_pc, target_pts)
-        fused.append(aligned)
-        registered_objects.append(aligned)
-        print(f"    Added {len(aligned)} points")
+    scene_up, floor_h = scene_up_vector(scene_pc)
+    print(f"  scene up (floor normal): {np.round(scene_up, 3)}, floor_h {floor_h:.3f}")
+    # SPLATTN completes each object's VGGT partial in place (no register step).
+    splattn = Image3DWorker("splattn") if args.image3d == "splattn" else None
+    try:
+        for obj_name, view_idx, mask, obj_pc in object_records:
+            verb = "Completing" if splattn else "Registering"
+            print(f"\n  {verb}: {obj_name} (view {view_idx})")
+            mask_v = cv2.resize(mask, (Wv, Hv), interpolation=cv2.INTER_NEAREST) > 0.5
+            valid = mask_v & scene_mask[view_idx]
+            target_pts = world_points[view_idx][valid]
+            if len(target_pts) < 50:
+                print(f"    Only {len(target_pts)} mask points in scene, skipping")
+                continue
+            if splattn:
+                # trim VGGT outliers (depth noise / mask bleed floating off the
+                # object) before completion — they inflate the canonicalization
+                # scale and make the completion spread into a cloud. Same robust
+                # radius trim register_object applies internally.
+                med = np.median(target_pts, axis=0)
+                rad = np.linalg.norm(target_pts - med, axis=1)
+                keep = rad < (np.median(rad) + 2.5 * (np.median(np.abs(rad - np.median(rad))) + 1e-9))
+                clean = target_pts[keep] if keep.sum() >= 50 else target_pts
+                print(f"    trimmed {len(target_pts) - len(clean)}/{len(target_pts)} outlier pts")
+                placed = splattn.complete(clean, scene_up)
+                print(f"    SplAttN completed in place: {placed.shape}")
+            else:
+                if obj_pc is None:
+                    print(f"    No object point cloud (--skip_3d), skipping registration")
+                    continue
+                aligned = register_object(obj_pc, target_pts, scene_up, floor_h)
+                # 3D inpainting: keep the observed front exactly (real → true size &
+                # position) and graft on ONLY the generated geometry that isn't
+                # already observed — the occluded back/sides. The generated object
+                # just fills the gap; it never overwrites the real visible surface.
+                from scipy.spatial import cKDTree
+                d_obs = cKDTree(target_pts).query(aligned)[0]
+                # "new" = generated geometry not already observed (the occluded
+                # back/sides). Threshold must be OBJECT-relative: a scene-relative
+                # one (0.02*scene_diag) is larger than a small object when a big
+                # floor inflates scene_diag, so the whole completion gets rejected.
+                obj_diag = float(np.linalg.norm(aligned.max(0) - aligned.min(0))) + 1e-9
+                new_pts = aligned[d_obs > 0.03 * obj_diag]
+                placed = np.concatenate([target_pts, new_pts], axis=0)
+                print(f"    kept {len(target_pts)} observed + grafted {len(new_pts)} generated")
+            fused.append(placed if splattn else new_pts)   # scene_pc already holds the observed front
+            registered_objects.append(placed)
+    finally:
+        if splattn:
+            splattn.close()
 
     with open(OBJECTS_PATH, "wb") as f:
         pickle.dump(registered_objects, f)
@@ -679,6 +1142,27 @@ else:
     pcd = pcd.voxel_down_sample(voxel_size=0.005 * scene_diag)
     fused_pc = np.asarray(pcd.points)
     print(f"\nFused point cloud (downsampled): {fused_pc.shape}")
+
+    # ── Gravity-align the whole reconstruction ──────────────────────────────
+    # VGGT's world frame is arbitrary (often tilted ~45°), so the output looks
+    # tilted / objects look "floating" in a viewer even when registration is
+    # correct. Rotate everything so the estimated floor normal (scene_up) points
+    # up (+Y). Camera extrinsics rotate too so Phase G occupancy stays valid.
+    def _R_to(a, b):
+        a = a / (np.linalg.norm(a) + 1e-9); b = b / (np.linalg.norm(b) + 1e-9)
+        v = np.cross(a, b); s = float(np.linalg.norm(v)); c = float(a @ b)
+        if s < 1e-9:
+            return np.eye(3) if c > 0 else -np.eye(3)
+        K = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+        return np.eye(3) + K + K @ K * ((1 - c) / (s * s))
+    R_g = _R_to(np.asarray(scene_up, float), np.array([0.0, 1.0, 0.0]))
+    fused_pc = fused_pc @ R_g.T
+    registered_objects = [np.asarray(o) @ R_g.T for o in registered_objects]
+    world_points = world_points @ R_g.T                       # for Phase E/G
+    extrinsics = np.asarray(extrinsics, float).copy()
+    extrinsics[:, :, :3] = extrinsics[:, :, :3] @ R_g.T       # world2cam rot
+    print(f"  gravity-aligned output (scene_up {np.round(scene_up,2)} -> +Y)")
+
     np.save(FUSED_PATH, fused_pc)
     o3d.io.write_point_cloud(os.path.join(OUTPUT_DIR, "fused_pointcloud.ply"), pcd)
 
@@ -702,6 +1186,14 @@ else:
     m2f = Mask2FormerForUniversalSegmentation.from_pretrained(
         "facebook/mask2former-swin-large-ade-semantic", torch_dtype=torch.float16).to("cuda").eval()
 
+    # Objects are labeled from the SAM3 instance masks + VLM names (open-vocab →
+    # canonical class); background structure (floor/wall/ceiling/...) from
+    # Mask2Former. Per view we build a class map: Mask2Former stuff first, then
+    # paint the instance masks on top (objects take precedence). -1 = unlabeled.
+    recs_by_view = {}
+    for uid, vidx, m, _ in object_records:
+        recs_by_view.setdefault(vidx, []).append((uid, m))
+
     ref_pts, ref_labels = [], []
     for v, path in enumerate(view_paths):
         img_v = Image.open(path).convert("RGB")
@@ -712,14 +1204,17 @@ else:
             out = m2f(**inputs)
         seg = m2f_processor.post_process_semantic_segmentation(
             out, target_sizes=[(Hv, Wv)])[0].cpu().numpy()
-        iris_map = np.full(seg.shape, IRIS_LABEL_TO_ID["other"], dtype=np.int32)
-        for ade_id, iris_label in ADE20K_TO_IRIS.items():
-            iris_map[seg == ade_id] = IRIS_LABEL_TO_ID[iris_label]
+        cmap = np.full(seg.shape, -1, dtype=np.int32)                 # unlabeled
+        for ade_id, iris_label in ADE20K_TO_IRIS.items():            # background stuff
+            cmap[seg == ade_id] = IRIS_LABEL_TO_ID[iris_label]
+        for uid, m in recs_by_view.get(v, []):                       # objects (priority)
+            om = cv2.resize(m, (Wv, Hv), interpolation=cv2.INTER_NEAREST) > 0.5
+            cmap[om] = IRIS_LABEL_TO_ID[name_to_class(uid)]
 
-        valid = scene_mask[v]
+        valid = scene_mask[v] & (cmap >= 0)
         ref_pts.append(world_points[v][valid])
-        ref_labels.append(iris_map[valid])
-        print(f"  Labeled view {v}: {os.path.basename(path)}")
+        ref_labels.append(cmap[valid])
+        print(f"  Labeled view {v}: {os.path.basename(path)} ({int(valid.sum())} ref pts)")
 
     ref_pts = np.concatenate(ref_pts, axis=0)
     ref_labels = np.concatenate(ref_labels, axis=0)

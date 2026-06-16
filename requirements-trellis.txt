@@ -62,7 +62,7 @@ flatbuffers==25.12.19
 fonttools==4.63.0
 fqdn==1.5.1
 frozenlist==1.6.0
-fsspec==2026.4.0
+fsspec>=2023.5.0,<2026.0
 gitdb==4.0.12
 GitPython==3.1.44
 glcontext==3.0.0

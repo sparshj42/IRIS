@@ -18,11 +18,12 @@ every model in the solution is open-weight and runs locally, and (b) that the
 
 | Stage | Model | Hugging Face ID | License |
 |-------|-------|-----------------|---------|
-| Object discovery (VLM) | Qwen3-VL-8B-Instruct | `Qwen/Qwen3-VL-8B-Instruct` | Apache-2.0 |
+| Object discovery (VLM) | Qwen3-VL-32B-Instruct (8B also supported) | `Qwen/Qwen3-VL-32B-Instruct` | Apache-2.0 |
 | Grounded segmentation | SAM 3 | `facebook/sam3` | SAM license (open weights) |
 | Monocular depth | Depth Anything V2 (Large) | `depth-anything/Depth-Anything-V2-Large-hf` | Apache-2.0 |
 | Object removal | RORem (SDXL-inpainting UNet) | base `diffusers/stable-diffusion-xl-1.0-inpainting-0.1` | OpenRAIL / open weights |
-| Image-to-3D | TRELLIS (image-large) | `microsoft/TRELLIS-image-large` | MIT |
+| Image-to-3D (default, occlusion-aware) | Amodal3R | `Sm0kyWu/Amodal3R` | open weights |
+| Image-to-3D (alternatives) | TRELLIS · Wonder3D · TIGON | `microsoft/TRELLIS-image-large` etc. | MIT / open |
 | Pose-free multi-view recon | VGGT-1B | `facebook/VGGT-1B` | open weights |
 | 2D semantic segmentation | Mask2Former (Swin-L, ADE20K) | `facebook/mask2former-swin-large-ade-semantic` | open weights |
 | Mesh extraction | Marching Cubes | (algorithm, via scikit-image) | — |
@@ -105,6 +106,34 @@ many sessions via a persistent file-based memory.
   discussed depth-grounded alternatives and chose to keep TRELLIS, accepting that
   generative completion is the cost of full object shapes — a known limitation,
   stated plainly.
+
+### Later developments (H100 pass)
+With more compute we re-ran the same evidence-first loop on every stage:
+- **VLM 8B → 32B.** A/B showed a *tie* on easy scenes but the 32B found ~2× the
+  objects on a cluttered ScanNet frame (the 8B wastes its budget on duplicate
+  detections), so 32B is the default; 8B stays selectable.
+- **Peel order → occlusion graph.** Replaced the naive global depth sort with a
+  pairwise occlusion graph (boundary-depth + physical-support) + topological sort.
+  On a cluttered frame the old sort led the peel with a floor cable; the new one
+  correctly leads with the foreground chair.
+- **Occlusion-aware image-to-3D.** Added **Amodal3R** (consumes the occluder mask)
+  as the default, plus **Wonder3D** (multi-view diffusion + visual-hull carve) —
+  each as a pinned-env subprocess worker, the same isolation pattern as before.
+- **Gravity-aligned output + instance semantics.** The recon is rotated so the
+  estimated floor normal points up (fixing "tilted/floating" outputs in a viewer),
+  and labels now come from the SAM3 instance masks + VLM names rather than a coarse
+  closed taxonomy.
+
+### What did NOT work, part 2 (baselines)
+- **Reproducing Gen3DSR (3DV 2025), the closest related work, was instructive.**
+  Its *released* code did **not** run to completion on a cluttered real ScanNet
+  frame: it crashed at its own object-to-scene placement step (RANSAC scale-fit
+  with no consensus, then zero depth-overlap) and on degenerate object meshes. It
+  needed three robustness patches from us just to finish, and even then dropped ~⅓
+  of objects. The lesson that shaped IRIS: **placing generated objects into a
+  metric scene is the fragile, unsolved step for this whole divide-and-conquer
+  paradigm** — Gen3DSR fails *loudly* (crash), IRIS degrades *gracefully* (still
+  produces a scene). That graceful-degradation property is a deliberate design goal.
 
 ### What did not apply
 We did not use multi-agent orchestration, MCP servers, or any agentic component
