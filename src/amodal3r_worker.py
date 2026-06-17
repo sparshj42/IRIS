@@ -83,11 +83,15 @@ def main():
                     slat_sampler_params={"steps": SLAT_STEPS, "cfg_strength": SLAT_CFG},
                     formats=["gaussian"],
                 )
-            xyz = outputs["gaussian"][0].get_xyz.detach().cpu().numpy()
+            g = outputs["gaussian"][0]
+            xyz = g.get_xyz.detach().cpu().numpy()
+            fdc = g._features_dc.detach().cpu().numpy().reshape(len(xyz), -1)[:, :3]
+            rgb = np.clip(0.2820947917738781 * fdc + 0.5, 0, 1)   # SH degree-0 -> RGB
+            pc = np.concatenate([xyz, rgb], axis=1)               # (N, 6): xyz + colour
             sys.stdout = r
-            if len(xyz) > n:                       # uniform subsample to n points
-                xyz = xyz[np.random.choice(len(xyz), n, replace=False)]
-            np.save(req["out"], xyz.astype(np.float32))
+            if len(pc) > n:                        # uniform subsample to n points
+                pc = pc[np.random.choice(len(pc), n, replace=False)]
+            np.save(req["out"], pc.astype(np.float32))
             print(f"@@OK {req['out']}", flush=True)
         except Exception as e:
             sys.stdout = real

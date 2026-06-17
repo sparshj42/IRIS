@@ -40,6 +40,10 @@ parser.add_argument("--scene_dir", default=None,
                     help="folder of images (multi-view); overrides --image")
 parser.add_argument("--sparse_depth", default=None,
                     help="optional .npy of (row, col, metric_depth) rows for scale recovery")
+parser.add_argument("--depth", default=None,
+                    help="optional dense metric depth map (.npy, aligned to --image) — "
+                         "RGB-D mode: used directly for peel ordering instead of "
+                         "DepthAnythingV2, and for metric scale (skips the depth model)")
 parser.add_argument("--output_dir", default="output")
 parser.add_argument("--resume", action="store_true",
                     help="skip phases whose outputs already exist (crash recovery)")
@@ -53,6 +57,20 @@ parser.add_argument("--image3d", choices=["trellis", "tigon", "amodal3r", "splat
 parser.add_argument("--stop_after_peeling", action="store_true",
                     help="exit after Phase B (for fast removal A/B comparison)")
 args = parser.parse_args()
+
+# RGB-D mode: derive sparse metric points from the dense --depth so the existing
+# metric-scale machinery (Phase C) makes the reconstruction metric for free.
+if args.depth and not args.sparse_depth:
+    import numpy as _np
+    os.makedirs(args.output_dir, exist_ok=True)
+    _d = _np.load(args.depth).astype(_np.float32)
+    _ys, _xs = _np.where(_d > 1e-3)
+    if len(_ys):
+        _sel = _np.random.choice(len(_ys), min(3000, len(_ys)), replace=False)
+        _sp = _np.stack([_ys[_sel], _xs[_sel], _d[_ys[_sel], _xs[_sel]]], 1).astype(_np.float32)
+        _spp = os.path.join(args.output_dir, "_depth_sparse.npy")
+        _np.save(_spp, _sp)
+        args.sparse_depth = _spp        # reuse sparse → VGGT metric scaling
 
 # per-output-dir so parallel runs (different --output_dir) don't collide
 RECORDS_PATH = os.path.join(args.output_dir, "object_records.pkl")
@@ -753,10 +771,20 @@ else:
             inst["uid"] = inst["label"] if n == 1 else f"{inst['label']} {n}"
         print(f"Created {len(instances)} instance masks")
 
-        print("Computing depth map...")
-        depth_map = get_depth_map(cur_img)
-        if args.sparse_depth and img_idx == 0:
-            depth_map = recover_metric_scale(depth_map, args.sparse_depth)
+        if args.depth and img_idx == 0:
+            # RGB-D mode: use the provided metric depth directly (no depth model).
+            # Peel ordering wants "higher = nearer" (disparity), so invert the
+            # metric depth (nearer = smaller metres -> larger inverse depth).
+            print("Using provided RGB-D depth (skipping DepthAnythingV2)...")
+            dm = np.load(args.depth).astype(np.float32)
+            if dm.shape[:2] != (cur_H, cur_W):
+                dm = cv2.resize(dm, (cur_W, cur_H), interpolation=cv2.INTER_NEAREST)
+            depth_map = np.where(dm > 1e-3, 1.0 / np.clip(dm, 1e-3, None), 0.0)
+        else:
+            print("Computing depth map...")
+            depth_map = get_depth_map(cur_img)
+            if args.sparse_depth and img_idx == 0:
+                depth_map = recover_metric_scale(depth_map, args.sparse_depth)
         np.save(os.path.join(OUTPUT_DIR, f"depth_map_{img_stem}.npy"), depth_map)
 
         for inst in instances:
@@ -1100,6 +1128,7 @@ if args.resume and os.path.exists(FUSED_PATH) and os.path.getmtime(FUSED_PATH) >
 else:
     fused = [scene_pc]
     registered_objects = []   # per-object registered clouds, for occupancy solidification
+    colored_objects = []      # (placed xyz, rgb) per object → colored objects-only mesh
     scene_up, floor_h = scene_up_vector(scene_pc)
     print(f"  scene up (floor normal): {np.round(scene_up, 3)}, floor_h {floor_h:.3f}")
     # SPLATTN completes each object's VGGT partial in place (no register step).
@@ -1130,7 +1159,11 @@ else:
                 if obj_pc is None:
                     print(f"    No object point cloud (--skip_3d), skipping registration")
                     continue
+                obj_rgb = obj_pc[:, 3:6] if obj_pc.shape[1] >= 6 else None   # gaussian colour
+                obj_pc = obj_pc[:, :3]
                 aligned = register_object(obj_pc, target_pts, scene_up, floor_h)
+                if obj_rgb is not None:    # full placed object + colour (objects-only render)
+                    colored_objects.append((aligned.copy(), obj_rgb))
                 # 3D inpainting: keep the observed front exactly (real → true size &
                 # position) and graft on ONLY the generated geometry that isn't
                 # already observed — the occluded back/sides. The generated object
@@ -1187,6 +1220,33 @@ else:
 
     np.save(FUSED_PATH, fused_pc)
     o3d.io.write_point_cloud(os.path.join(OUTPUT_DIR, "fused_pointcloud.ply"), pcd)
+
+    # ── Colored objects-only reconstruction (SceneComplete-style) ────────────
+    # Compose the placed, COLORED per-object gaussians (no floor/wall) into a
+    # clean colored point cloud + Poisson surface mesh — a complete textured
+    # object scene, distinct from the semantic mesh.
+    if colored_objects:
+        co_xyz = np.concatenate([a for a, _ in colored_objects], 0) @ R_g.T
+        co_rgb = np.clip(np.concatenate([c for _, c in colored_objects], 0), 0, 1)
+        cpcd = o3d.geometry.PointCloud()
+        cpcd.points = o3d.utility.Vector3dVector(co_xyz)
+        cpcd.colors = o3d.utility.Vector3dVector(co_rgb)
+        o3d.io.write_point_cloud(os.path.join(OUTPUT_DIR, "objects_colored.ply"), cpcd)
+        try:
+            cpcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(
+                radius=0.03 * scene_diag, max_nn=30))
+            cpcd.orient_normals_consistent_tangent_plane(20)
+            omesh, dens = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+                cpcd, depth=9)
+            dens = np.asarray(dens)
+            omesh.remove_vertices_by_mask(dens < np.quantile(dens, 0.05))  # trim balloon
+            omesh = omesh.crop(cpcd.get_axis_aligned_bounding_box())
+            omesh.compute_vertex_normals()
+            o3d.io.write_triangle_mesh(os.path.join(OUTPUT_DIR, "objects_mesh.ply"), omesh)
+            print(f"  colored objects mesh: {len(omesh.vertices)} verts "
+                  f"(objects_colored.ply + objects_mesh.ply)")
+        except Exception as e:
+            print(f"  colored objects mesh skipped: {e}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PHASE E: SEMANTIC LABELING (Mask2Former, multi-view voting)
