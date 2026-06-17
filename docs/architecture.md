@@ -56,6 +56,61 @@ RGB image
 Implementation: a single orchestrator [src/pipeline.py](../src/pipeline.py); each
 stage is also runnable standalone as `src/stepN_*.py`.
 
+## Occlusion-graph peel ordering — a core contribution
+
+Peeling only works if objects are removed in the right order: you must remove an
+**occluder before the geometry it hides**, or the de-occlusion never happens. The
+order is therefore load-bearing, and getting it right on cluttered real scenes is
+itself a contribution.
+
+**Why a global depth sort is the wrong tool.** The obvious approach — sort objects
+by nearest depth, peel nearest-first — quietly fails, because peel order is **not a
+total order over a scalar**. It is a *partial order* defined only between objects
+that actually overlap:
+- Two objects on opposite sides of the scene have **no occlusion relationship** —
+  their relative order is irrelevant, yet a global sort invents one.
+- A large object that is *mostly* far but **pokes in front of a neighbour at one
+  edge** must be peeled first *there*; its mean/global depth misranks it.
+- A single noisy depth pixel can flip a global ranking.
+
+**The formulation: a directed occlusion graph + topological sort**
+(`build_occlusion_order`). IRIS asks the only question that matters — *for each pair
+of objects that touch, which is in front where they meet?* — and assembles the
+answers into a partial order:
+
+1. **Contact band.** For each adjacent mask pair `(i, j)`, dilate each mask and
+   intersect with the other → the thin **contested boundary** between them. Pairs
+   that don't touch contribute **no constraint** (correctly).
+2. **Boundary-local depth decision.** Take the **median Depth-Anything-V2 disparity
+   just *inside* each mask** within that band (eroded, to avoid the unreliable depth
+   exactly at edges). Higher disparity = nearer = the **occluder** → directed edge
+   `occluder → occluded`. A margin `τ` makes near-ties produce **no edge** rather
+   than a coin-flip.
+3. **Physical-support tiebreaker.** When depth is indecisive (a flat object lying
+   *on* another has near-equal boundary depth), a **gravity-aware, contact-grounded**
+   cue decides: an object that makes real mask contact and sits *above* the contact
+   is peeled before its support. (Contact-grounded, not bounding-box — so a big
+   foreground object no longer falsely "supports" everything inside its bbox.)
+4. **Topological sort.** Kahn's algorithm linearises the graph into a **guaranteed
+   front-to-back order**; unconstrained objects and ties break by global
+   nearest-depth, and **cycles** from boundary noise (`i→j→k→i`) are broken by
+   dropping the **weakest-margin edge**.
+
+**Why this is the right generalisation.** IRIS's premise is the guarantee *the
+nearest object cannot be occluded*. The occlusion graph is that guarantee **lifted
+from a single "nearest" to a full partial order**: every edge is a local, verifiable
+"A occludes B → peel A first," and the topological sort is the unique-up-to-ties
+peeling that never tries to reveal something still blocked. It is robust *because*
+each decision is made locally, at the boundary where occlusion physically happens,
+not from a global scalar that has no notion of *who occludes whom*.
+
+**Measured effect.** On a cluttered ScanNet frame the naive sort led the peel with a
+floor power-strip (a bbox-support false positive); the graph version correctly leads
+with the foreground chair and even recovers `coffee-table → boxes-on-the-shelf-under-it`.
+On simple scenes the two agree — no regression.
+
+---
+
 ## Stage details
 
 **[A] Object discovery.** Qwen3-VL-32B is prompted (descriptive, singular, JSON
