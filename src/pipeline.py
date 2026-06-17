@@ -1274,7 +1274,10 @@ print("=" * 60)
 from skimage import measure
 from scipy import ndimage
 
-GRID = 128
+# Finer grid → the dilation/smoothing no longer bridges across depth-discontinuity
+# gaps (e.g. a tall object's edge to the wall behind it), which is what produced
+# the "skirt" / webbing artifacts behind foreground objects in single-view recon.
+GRID = 160
 mins = fused_pc.min(0)
 maxs = fused_pc.max(0)
 span = (maxs - mins).max()
@@ -1288,16 +1291,26 @@ occ = ndimage.gaussian_filter(occ, sigma=1.0)
 
 verts, faces, _, _ = measure.marching_cubes(occ, level=0.5)
 verts_world = verts * voxel + mins
-print(f"Mesh: {len(verts_world)} vertices, {len(faces)} faces")
+
+mesh_o3d = o3d.geometry.TriangleMesh()
+mesh_o3d.vertices = o3d.utility.Vector3dVector(verts_world)
+mesh_o3d.triangles = o3d.utility.Vector3iVector(faces.astype(np.int32))
+
+# drop tiny disconnected fragments (meshing artifacts), keeping the main surface
+# and any object-sized components — threshold is RELATIVE so real objects survive.
+tri_clusters, n_tri, _ = mesh_o3d.cluster_connected_triangles()
+n_tri = np.asarray(n_tri)
+small = n_tri < 0.01 * n_tri.max()
+mesh_o3d.remove_triangles_by_mask(small[np.asarray(tri_clusters)])
+mesh_o3d.remove_unreferenced_vertices()
+verts_world = np.asarray(mesh_o3d.vertices)
+print(f"Mesh: {len(verts_world)} vertices, {len(mesh_o3d.triangles)} faces "
+      f"({int(small.sum())} fragment component(s) removed)")
 
 vert_tree = KDTree(fused_pc)
 _, vi = vert_tree.query(verts_world, k=1)
 vert_labels = labels[vi[:, 0]]
 vert_colors = np.array([LABEL_COLORS[l] for l in vert_labels])
-
-mesh_o3d = o3d.geometry.TriangleMesh()
-mesh_o3d.vertices = o3d.utility.Vector3dVector(verts_world)
-mesh_o3d.triangles = o3d.utility.Vector3iVector(faces.astype(np.int32))
 mesh_o3d.vertex_colors = o3d.utility.Vector3dVector(vert_colors)
 mesh_o3d.compute_vertex_normals()
 mesh_path = os.path.join(OUTPUT_DIR, "final_semantic_mesh.ply")
