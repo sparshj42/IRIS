@@ -1233,18 +1233,24 @@ else:
         cpcd.colors = o3d.utility.Vector3dVector(co_rgb)
         o3d.io.write_point_cloud(os.path.join(OUTPUT_DIR, "objects_colored.ply"), cpcd)
         try:
-            cpcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(
-                radius=0.03 * scene_diag, max_nn=30))
-            cpcd.orient_normals_consistent_tangent_plane(20)
-            omesh, dens = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-                cpcd, depth=9)
-            dens = np.asarray(dens)
-            omesh.remove_vertices_by_mask(dens < np.quantile(dens, 0.05))  # trim balloon
-            omesh = omesh.crop(cpcd.get_axis_aligned_bounding_box())
+            # mesh each object SEPARATELY (cluster → Poisson → merge) so Poisson
+            # doesn't web nearby objects together — cleaner than one combined fit.
+            lbls = np.array(cpcd.cluster_dbscan(eps=0.03 * scene_diag, min_points=30))
+            omesh = o3d.geometry.TriangleMesh()
+            for k in range(lbls.max() + 1):
+                sub = cpcd.select_by_index(np.where(lbls == k)[0])
+                if len(sub.points) < 80:
+                    continue
+                sub.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(
+                    radius=0.04 * scene_diag, max_nn=40))
+                sub.orient_normals_consistent_tangent_plane(20)
+                m, dens = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(sub, depth=9)
+                m.remove_vertices_by_mask(np.asarray(dens) < np.quantile(np.asarray(dens), 0.05))
+                omesh += m.crop(sub.get_axis_aligned_bounding_box())
             omesh.compute_vertex_normals()
             o3d.io.write_triangle_mesh(os.path.join(OUTPUT_DIR, "objects_mesh.ply"), omesh)
-            print(f"  colored objects mesh: {len(omesh.vertices)} verts "
-                  f"(objects_colored.ply + objects_mesh.ply)")
+            print(f"  colored objects mesh: {len(omesh.vertices)} verts, "
+                  f"{lbls.max()+1} objects (objects_colored.ply + objects_mesh.ply)")
         except Exception as e:
             print(f"  colored objects mesh skipped: {e}")
 
