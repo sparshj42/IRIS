@@ -1157,8 +1157,13 @@ else:
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(fused_pc)
     pcd = pcd.voxel_down_sample(voxel_size=0.005 * scene_diag)
+    # denoise: drop floaters (VGGT depth noise + per-view background ghosting) that
+    # would otherwise become spurious blobs in the marching-cubes mesh / occupancy.
+    n_before = len(pcd.points)
+    pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
     fused_pc = np.asarray(pcd.points)
-    print(f"\nFused point cloud (downsampled): {fused_pc.shape}")
+    print(f"\nFused point cloud (downsampled + denoised): {fused_pc.shape} "
+          f"(removed {n_before - len(fused_pc)} outliers)")
 
     # ── Gravity-align the whole reconstruction ──────────────────────────────
     # VGGT's world frame is arbitrary (often tilted ~45°), so the output looks
