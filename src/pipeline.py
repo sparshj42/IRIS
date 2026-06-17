@@ -971,19 +971,36 @@ def _R_align(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def scene_up_vector(scene_pc: np.ndarray):
-    """Gravity/up direction from the dominant (floor) plane of the scene, oriented
-    to point from the floor toward the scene body, plus the floor height along
-    that axis (so objects can be rested on the floor). Falls back to +Z."""
+    """Gravity/up direction = the FLOOR/TABLE plane normal, plus the floor height.
+
+    Picking the *dominant* plane is fragile: scenes with a large background wall
+    (facing the camera) make the WALL dominant, so the up vector ends up along the
+    view axis and the whole reconstruction tilts. Instead we extract several planes
+    and keep the most *vertical* one — for a roughly-level camera (VGGT's y-down
+    convention) the floor normal aligns with the ±Y axis, whereas a camera-facing
+    wall's normal lies along ±Z. Among sufficiently large planes, max |n.y| wins."""
     try:
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(scene_pc)
-        plane, inliers = pcd.segment_plane(0.02 * scene_diag, 3, 200)
-        n = np.asarray(plane[:3], float)
-        n /= (np.linalg.norm(n) + 1e-9)
-        floor_c = scene_pc[inliers].mean(0)
-        if np.dot(n, scene_pc.mean(0) - floor_c) < 0:
+        rem = pcd
+        best = None   # (verticality, normal, inlier_pts)
+        for _ in range(4):                       # peel off up to 4 dominant planes
+            if len(rem.points) < 300:
+                break
+            plane, inl = rem.segment_plane(0.02 * scene_diag, 3, 200)
+            n = np.asarray(plane[:3], float); n /= (np.linalg.norm(n) + 1e-9)
+            pts = np.asarray(rem.points)[inl]
+            if len(inl) / len(scene_pc) > 0.05:  # only planes of meaningful size
+                vert = abs(float(n[1]))          # alignment with the vertical (±Y)
+                if best is None or vert > best[0]:
+                    best = (vert, n.copy(), pts.copy())
+            rem = rem.select_by_index(inl, invert=True)
+        if best is None:
+            raise RuntimeError("no plane")
+        n, fpts = best[1], best[2]
+        if np.dot(n, scene_pc.mean(0) - fpts.mean(0)) < 0:
             n = -n
-        floor_h = float(np.median(scene_pc[inliers] @ n))   # floor level along up
+        floor_h = float(np.median(fpts @ n))     # floor level along up
         return n, floor_h
     except Exception:
         return np.array([0.0, 0.0, 1.0]), float(np.percentile(scene_pc[:, 2], 5))
