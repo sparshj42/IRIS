@@ -49,11 +49,11 @@ parser.add_argument("--resume", action="store_true",
                     help="skip phases whose outputs already exist (crash recovery)")
 parser.add_argument("--skip_3d", action="store_true",
                     help="skip per-object image-to-3D; fused recon = VGGT scene")
-parser.add_argument("--image3d", choices=["trellis", "tigon", "amodal3r", "splattn", "wonder3d"], default="trellis",
-                    help="per-object 3D backend: image-only TRELLIS (default), text+image "
-                         "TIGON (Phase-A label as prompt), occlusion-aware AMODAL3R (SAM3 mask), "
-                         "or SPLATTN point-cloud completion (completes the VGGT partial in place, "
-                         "no registration)")
+parser.add_argument("--image3d", choices=["amodal3r", "trellis"], default="amodal3r",
+                    help="per-object 3D backend: occlusion-aware AMODAL3R (default, consumes "
+                         "the SAM3 mask) or image-only TRELLIS (baseline). Other backends we "
+                         "evaluated (TIGON, Wonder3D, SplAttN, TripoSR...) are documented in "
+                         "docs/attribution.md.")
 parser.add_argument("--stop_after_peeling", action="store_true",
                     help="exit after Phase B (for fast removal A/B comparison)")
 args = parser.parse_args()
@@ -210,27 +210,16 @@ class Image3DWorker:
     subprocess speaking a line-based "@@" protocol. Input: a white-bg object crop
     PNG (+ optional text label). Output: a point cloud (gaussian xyz).
 
-    Backends (all built on the TRELLIS gaussian decoder, same get_xyz contract):
+    Backends (both built on the TRELLIS gaussian decoder, same xyz+rgb contract):
+      - "amodal3r": occlusion-aware Amodal3R (TRELLIS fork), `tigon` env (shares its
+                    deps). Takes the object's mask in addition to the crop;
+                    reconstructs the complete object, tolerating occlusion. Default.
       - "trellis":  image-only TRELLIS-image-large, `trellis` env, cwd = repo root.
-      - "tigon"  :  text+image TIGON, `tigon` env, cwd = models/TIGON (its code uses
-                    relative ./mix_e2e_pipe and ./external paths). The object label
-                    from Phase A is passed as the text condition.
-      - "amodal3r": occlusion-aware Amodal3R (TRELLIS fork), runs in the `tigon` env
-                    (shares its deps). Takes the object's mask in addition to the
-                    crop; reconstructs the complete object, tolerating occlusion.
     """
 
     _CFG = {
-        "trellis":  dict(env="trellis",  script="src/trellis_worker.py",  cwd=None),
-        "tigon":    dict(env="tigon",    script="src/tigon_worker.py",    cwd=config.TIGON_DIR),
         "amodal3r": dict(env="tigon",    script="src/amodal3r_worker.py", cwd=None),
-        # SplAttN is point-cloud completion (not image-to-3D): it completes an
-        # object's VGGT partial in place, so it has no register step. cwd is its
-        # repo so config_55 / models.SplAttN import.
-        "splattn":  dict(env="splattn",  script="src/splattn_worker.py",  cwd=config.SPLATTN_DIR),
-        # Wonder3D: cross-domain multi-view diffusion (6 ortho views) + visual-hull
-        # carve to a point cloud. cwd is its repo (relative ./mvdiffusion imports).
-        "wonder3d": dict(env="wonder3d", script="src/wonder3d_worker.py", cwd=config.WONDER3D_DIR),
+        "trellis":  dict(env="trellis",  script="src/trellis_worker.py",  cwd=None),
     }
 
     def __init__(self, backend: str = "trellis"):
@@ -270,25 +259,6 @@ class Image3DWorker:
         req = {"image": os.path.abspath(crop_path), "out": out, "n": n, "text": text}
         if mask_path is not None:                       # amodal3r consumes the mask
             req["mask"] = os.path.abspath(mask_path)
-        self.proc.stdin.write(json.dumps(req) + "\n")
-        self.proc.stdin.flush()
-        for line in self.proc.stdout:
-            line = line.strip()
-            if line.startswith("@@OK"):
-                return np.load(out)
-            if line.startswith("@@ERR"):
-                raise RuntimeError(f"{self.backend} worker: " + line)
-            if self.proc.poll() is not None:
-                raise RuntimeError(f"{self.backend} worker died; see " + self.log.name)
-        raise RuntimeError(f"{self.backend} worker stdout closed unexpectedly")
-
-    def complete(self, partial: np.ndarray, scene_up: np.ndarray) -> np.ndarray:
-        """SplAttN path: complete an object's VGGT partial in place (scene coords)."""
-        import json
-        pin = os.path.join(self.tmp, "partial.npy")
-        out = os.path.join(self.tmp, "completed.npy")
-        np.save(pin, partial.astype(np.float32))
-        req = {"partial": pin, "up": [float(x) for x in scene_up], "out": out}
         self.proc.stdin.write(json.dumps(req) + "\n")
         self.proc.stdin.flush()
         for line in self.proc.stdout:
@@ -875,15 +845,12 @@ if args.stop_after_peeling:
     sys.exit(0)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PHASE B2: DEFERRED IMAGE-TO-3D (TRELLIS or TIGON)
+# PHASE B2: DEFERRED IMAGE-TO-3D (Amodal3R / TRELLIS)
 # Runs after the iris-env models are freed, so the ~8-10 GB worker has the GPU to
 # itself. Resumable: each object's point cloud is checkpointed into the records
-# file, so a crash only costs the object in flight. With --image3d tigon, the
-# object's Phase-A label is passed as a text prompt (TIGON is text+image cond).
+# file, so a crash only costs the object in flight.
 # ═══════════════════════════════════════════════════════════════════════════════
-# SPLATTN is point-cloud completion, not image-to-3D — it runs in Phase D on the
-# VGGT partials, so skip the per-object image-to-3D worker here.
-if not args.skip_3d and args.image3d != "splattn":
+if not args.skip_3d:
     # records without a saved crop (object too small to crop) carry no image-to-3D;
     # they still get an instance mask for Phase E labeling, just skip them here.
     need = [i for i, rec in enumerate(object_records) if rec[3] is None
@@ -898,11 +865,10 @@ if not args.skip_3d and args.image3d != "splattn":
         try:
             for i in need:
                 uid, vi, m, _ = object_records[i]
-                # uid is the Phase-A object label (e.g. "purple water bottle");
-                # TIGON conditions on it as a text prompt, TRELLIS ignores it.
-                # amodal3r additionally consumes the SAM3 mask (saved alongside).
+                # uid is the Phase-A object label; TRELLIS ignores it. amodal3r
+                # additionally consumes the SAM3 mask (saved alongside the crop).
                 mask_path = (os.path.join(CROPS_DIR, f"{i:02d}_mask.png")
-                             if backend in ("amodal3r", "wonder3d") else None)
+                             if backend == "amodal3r" else None)
                 pc = worker.pointcloud(os.path.join(CROPS_DIR, f"{i:02d}.png"),
                                        text=uid, mask_path=mask_path)
                 object_records[i] = (uid, vi, m, pc)
@@ -1131,58 +1097,35 @@ else:
     colored_objects = []      # (placed xyz, rgb) per object → colored objects-only mesh
     scene_up, floor_h = scene_up_vector(scene_pc)
     print(f"  scene up (floor normal): {np.round(scene_up, 3)}, floor_h {floor_h:.3f}")
-    # SPLATTN completes each object's VGGT partial in place (no register step).
-    splattn = Image3DWorker("splattn") if args.image3d == "splattn" else None
-    try:
-        for obj_name, view_idx, mask, obj_pc in object_records:
-            verb = "Completing" if splattn else "Registering"
-            print(f"\n  {verb}: {obj_name} (view {view_idx})")
-            mask_v = cv2.resize(mask, (Wv, Hv), interpolation=cv2.INTER_NEAREST) > 0.5
-            valid = mask_v & scene_mask[view_idx]
-            target_pts = world_points[view_idx][valid]
-            if len(target_pts) < 50:
-                print(f"    Only {len(target_pts)} mask points in scene, skipping")
-                continue
-            if splattn:
-                # trim VGGT outliers (depth noise / mask bleed floating off the
-                # object) before completion — they inflate the canonicalization
-                # scale and make the completion spread into a cloud. Same robust
-                # radius trim register_object applies internally.
-                med = np.median(target_pts, axis=0)
-                rad = np.linalg.norm(target_pts - med, axis=1)
-                keep = rad < (np.median(rad) + 2.5 * (np.median(np.abs(rad - np.median(rad))) + 1e-9))
-                clean = target_pts[keep] if keep.sum() >= 50 else target_pts
-                print(f"    trimmed {len(target_pts) - len(clean)}/{len(target_pts)} outlier pts")
-                placed = splattn.complete(clean, scene_up)
-                print(f"    SplAttN completed in place: {placed.shape}")
-            else:
-                if obj_pc is None:
-                    print(f"    No object point cloud (--skip_3d), skipping registration")
-                    continue
-                obj_rgb = obj_pc[:, 3:6] if obj_pc.shape[1] >= 6 else None   # gaussian colour
-                obj_pc = obj_pc[:, :3]
-                aligned = register_object(obj_pc, target_pts, scene_up, floor_h)
-                if obj_rgb is not None:    # full placed object + colour (objects-only render)
-                    colored_objects.append((aligned.copy(), obj_rgb))
-                # 3D inpainting: keep the observed front exactly (real → true size &
-                # position) and graft on ONLY the generated geometry that isn't
-                # already observed — the occluded back/sides. The generated object
-                # just fills the gap; it never overwrites the real visible surface.
-                from scipy.spatial import cKDTree
-                d_obs = cKDTree(target_pts).query(aligned)[0]
-                # "new" = generated geometry not already observed (the occluded
-                # back/sides). Threshold must be OBJECT-relative: a scene-relative
-                # one (0.02*scene_diag) is larger than a small object when a big
-                # floor inflates scene_diag, so the whole completion gets rejected.
-                obj_diag = float(np.linalg.norm(aligned.max(0) - aligned.min(0))) + 1e-9
-                new_pts = aligned[d_obs > 0.03 * obj_diag]
-                placed = np.concatenate([target_pts, new_pts], axis=0)
-                print(f"    kept {len(target_pts)} observed + grafted {len(new_pts)} generated")
-            fused.append(placed if splattn else new_pts)   # scene_pc already holds the observed front
-            registered_objects.append(placed)
-    finally:
-        if splattn:
-            splattn.close()
+    for obj_name, view_idx, mask, obj_pc in object_records:
+        print(f"\n  Registering: {obj_name} (view {view_idx})")
+        mask_v = cv2.resize(mask, (Wv, Hv), interpolation=cv2.INTER_NEAREST) > 0.5
+        valid = mask_v & scene_mask[view_idx]
+        target_pts = world_points[view_idx][valid]
+        if len(target_pts) < 50:
+            print(f"    Only {len(target_pts)} mask points in scene, skipping")
+            continue
+        if obj_pc is None:
+            print(f"    No object point cloud (--skip_3d), skipping registration")
+            continue
+        obj_rgb = obj_pc[:, 3:6] if obj_pc.shape[1] >= 6 else None   # gaussian colour
+        obj_pc = obj_pc[:, :3]
+        aligned = register_object(obj_pc, target_pts, scene_up, floor_h)
+        if obj_rgb is not None:        # full placed object + colour (objects-only render)
+            colored_objects.append((aligned.copy(), obj_rgb))
+        # 3D inpainting: keep the observed front exactly (real -> true size &
+        # position) and graft on ONLY the generated geometry that isn't already
+        # observed — the occluded back/sides. Never overwrites the visible surface.
+        from scipy.spatial import cKDTree
+        d_obs = cKDTree(target_pts).query(aligned)[0]
+        # OBJECT-relative threshold: a scene-relative one is larger than a small
+        # object when a big floor inflates scene_diag, rejecting the whole completion.
+        obj_diag = float(np.linalg.norm(aligned.max(0) - aligned.min(0))) + 1e-9
+        new_pts = aligned[d_obs > 0.03 * obj_diag]
+        placed = np.concatenate([target_pts, new_pts], axis=0)
+        print(f"    kept {len(target_pts)} observed + grafted {len(new_pts)} generated")
+        fused.append(new_pts)          # scene_pc already holds the observed front
+        registered_objects.append(placed)
 
     with open(OBJECTS_PATH, "wb") as f:
         pickle.dump(registered_objects, f)
@@ -1220,6 +1163,15 @@ else:
 
     np.save(FUSED_PATH, fused_pc)
     o3d.io.write_point_cloud(os.path.join(OUTPUT_DIR, "fused_pointcloud.ply"), pcd)
+
+    # Save the OBSERVED surface and the OCCLUDED completions separately, so
+    # evaluation can score them honestly: visible-region F1 on the observed cloud,
+    # occluded-surface recall on the completions (fused[0] is scene_pc; fused[1:]
+    # are the grafted occluded back/sides per object).
+    np.save(os.path.join(OUTPUT_DIR, "observed_pointcloud.npy"), fused[0] @ R_g.T)
+    if len(fused) > 1:
+        np.save(os.path.join(OUTPUT_DIR, "completion_pointcloud.npy"),
+                np.concatenate(fused[1:], 0) @ R_g.T)
 
     # ── Colored objects-only reconstruction (SceneComplete-style) ────────────
     # Compose the placed, COLORED per-object gaussians (no floor/wall) into a

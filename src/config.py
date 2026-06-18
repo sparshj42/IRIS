@@ -19,10 +19,7 @@ def _path(env, *default_parts):
 
 # ── third-party model repo (cloned into models/, see scripts/setup_envs.sh) ──
 TRELLIS_DIR = _path("IRIS_TRELLIS_DIR", "models", "TRELLIS")
-TIGON_DIR = _path("IRIS_TIGON_DIR", "models", "TIGON")
 AMODAL3R_DIR = _path("IRIS_AMODAL3R_DIR", "models", "Amodal3R")
-SPLATTN_DIR = _path("IRIS_SPLATTN_DIR", "models", "SplAttN")
-WONDER3D_DIR = _path("IRIS_WONDER3D_DIR", "models", "Wonder3D")
 
 # ── checkpoints ──
 # RORem UNet weights (download via scripts/fetch_weights.py or set the env var)
