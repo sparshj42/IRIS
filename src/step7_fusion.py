@@ -27,7 +27,7 @@ def load_inputs():
         with open("object_records.pkl", "rb") as f:
             records = pickle.load(f)  # (name, view_idx, mask, pc)
     else:
-        # standalone fallback: masks from step1 (view 0) + point clouds from step5
+        # standalone fallback: masks (view 0) + per-object point clouds from prior phases
         with open("masks.pkl", "rb") as f:
             masks = pickle.load(f)
         with open("object_pointclouds.pkl", "rb") as f:

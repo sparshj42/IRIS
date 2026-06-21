@@ -150,10 +150,14 @@ IRIS is ~6× faster, degrades gracefully where Gen3DSR's released code crashes o
 cluttered real frame, and additionally emits the free/occupied/occluded occupancy the
 problem statement asks for.
 
-## Diagnostic results measured so far
+## Diagnostic results (development log)
 
-Run on `data/test3.png` (a tabletop scene: toolbox, bottle, mouse, marker),
-default config (SAM 3 + RORem + TRELLIS + VGGT), GPU capped at 150 W.
+These are **earlier-development diagnostics** on `data/test3.png` (a tabletop scene:
+toolbox, bottle, mouse, marker), SAM 3 + RORem + VGGT with the image-to-3D backend
+varied, GPU capped at 150 W. They predate Amodal3R becoming the occlusion-aware
+default — the image-to-3D ablation below is what led from TripoSR to TRELLIS (and,
+later, to Amodal3R). Kept as a record of the A/B decisions; the headline numbers are
+the ScanNet table above.
 
 **Registration quality** — mask-guided ICP fitness of each object into the VGGT
 scene (1.0 = full overlap). This is a direct proxy for image-to-3D + fusion

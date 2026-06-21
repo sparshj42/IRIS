@@ -5,10 +5,16 @@
 ```bash
 conda activate iris
 cd IRIS
+
+# RGB-only (monocular): geometry is metric-by-proportion, not true scale
 python src/pipeline.py --image data/test3.png --output_dir output
+
+# RGB-D (recommended when depth is available): pass the sensor depth for true metric scale
+python src/pipeline.py --image frame.jpg --depth depth.npy --output_dir output
 ```
 
-Inputs: a single RGB image. Outputs land in `--output_dir`:
+Inputs: **a single RGB image**, optionally with **a depth map** (`--depth`, RGB-D —
+see [Input modes](#input-modes-rgb-vs-rgb-d) below). Outputs land in `--output_dir`:
 - `synthetic_views/` — the peeled, same-pose views
 - `fused_pointcloud.ply` — scene + registered object clouds
 - `labeled_pointcloud.ply` — semantically colored cloud
@@ -26,16 +32,43 @@ Image-to-3D is swappable via `--image3d`; the alternatives are documented in
 | Flag | Default | Purpose |
 |------|---------|---------|
 | `--image` | `data/test3.png` | input RGB image (single-frame, IRIS's main mode) |
+| `--depth` | – | **RGB-D mode**: dense metric depth map (`.npy`, aligned to `--image`). Used directly for peel ordering (**skips DepthAnythingV2**) **and** for true metric scale. See [Input modes](#input-modes-rgb-vs-rgb-d). |
 | `--scene_dir` | – | folder of images (multi-view); overrides `--image` |
 | `--output_dir` | `output` | where artifacts are written |
 | `--image3d` | `amodal3r` | per-object 3D backend: `amodal3r` (occlusion-aware, default) or `trellis` (image-only baseline) |
-| `--sparse_depth` | – | `.npy` of (row,col,metric_depth) ~500 px; makes the **whole reconstruction metric** (scales VGGT via median depth ratio) for the `<2 cm` KPI |
+| `--sparse_depth` | – | sparse metric scale: `.npy` of (row,col,metric_depth) ~500 px; scales VGGT via median depth ratio. A lighter alternative to `--depth` when only sparse points are available |
 | `--skip_3d` | off | skip per-object image-to-3D; fused recon = VGGT scene only |
 | `--resume` | off | skip phases whose outputs already exist (crash recovery) |
 | `--stop_after_peeling` | off | stop after the peel phase |
 
 > Set `IRIS_VLM_ID=Qwen/Qwen3-VL-8B-Instruct` for a lighter (~16 GB) discovery VLM
 > on smaller GPUs; the 32B default expects a large GPU.
+
+## Input modes: RGB vs RGB-D
+
+IRIS runs from a single RGB image; a depth map is **optional but recommended when
+available** (a depth sensor, an RGB-D dataset, or a stereo rig). Depth enters the
+pipeline in two independent ways, and `--depth` supplies both:
+
+| | RGB only | `--depth` (RGB-D) |
+|---|---|---|
+| **Peel ordering** | DepthAnythingV2 monocular depth | the **sensor depth directly** (no depth model) |
+| **Metric scale** | proportional only (arbitrary scale) | **true metric** (sensor depth → scale factor) |
+| **Reconstruction-accuracy KPI (cm)** | not metric | meaningful (the `< 2 cm` numbers) |
+
+```bash
+# RGB-D: depth.npy is a dense (H×W) float metric depth map, aligned to --image
+python src/pipeline.py --image frame.jpg --depth depth.npy --output_dir output
+```
+
+Notes:
+- `--depth` is the input the **benchmark uses** — sensor depth gives the recon true
+  metric scale, so the centimetre accuracy numbers in [kpis.md](kpis.md) are real
+  (the geometry is still color/VGGT-derived; depth only fixes scale + ordering).
+- If you only have **sparse** metric points (not a dense map), use `--sparse_depth`
+  instead — it fixes scale but peel ordering still uses DepthAnythingV2.
+- The depth map is resized to the RGB resolution internally, so it does not need to
+  match `--image` pixel-for-pixel, only be aligned (same camera view).
 
 ## Staged / crash-safe execution
 

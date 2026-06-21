@@ -55,10 +55,11 @@ The worker envs are auto-located via `CONDA_EXE` / common conda roots; override 
 
 ## Weights notes
 
-- **RORem** (default remover) is not openly downloadable — get its SDXL-inpainting
-  UNet checkpoint from <https://github.com/leeruibin/RORem>, place it at
-  `checkpoints/RORem` (or set `IRIS_ROREM_CKPT`). Or just use `--remover lama`
-  (no extra weights).
+- **RORem** (the object remover) is required — get its SDXL-inpainting UNet
+  checkpoint from <https://github.com/leeruibin/RORem> and place it at
+  `checkpoints/RORem` (or set `IRIS_ROREM_CKPT`). It loads on top of the base
+  SDXL-inpainting pipeline (`diffusers/stable-diffusion-xl-1.0-inpainting-0.1`),
+  which auto-downloads from Hugging Face.
 - **SAM 3** (`facebook/sam3`) is a gated Hugging Face repo — accept its terms and
   export an `HF_TOKEN` so it (and any other gated weights) download.
 - Everything else (Qwen3-VL, SAM3, Depth-Anything-V2, SDXL-inpainting, Amodal3R,
