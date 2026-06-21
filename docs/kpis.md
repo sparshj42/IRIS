@@ -103,6 +103,40 @@ occluded back/sides of objects and never alters the observed surface. Its value 
 **occlusion recovery** — filling geometry the camera never saw (the PS's core goal),
 which the visible-region F1 deliberately does not credit.
 
+### Reproducing the ScanNet table
+
+The numbers above regenerate from the repo with three scripts; ScanNet itself must be
+obtained from its [official source](http://www.scan-net.org/) (sign the terms — we do
+not redistribute it). The 10 scenes are: `scene0250 scene0400 scene0300 scene0100
+scene0350 scene0075 scene0010 scene0600 scene0011 scene0030` (all the `_00` capture).
+
+```bash
+SID=scene0250_00                        # repeat per scene
+SCAN=/path/to/scannet                   # your ScanNet root (has scans/, download script)
+
+# 1. fetch one scene's RGB-D stream + GT mesh (ScanNet's own downloader)
+python download-scannet.py -o "$SCAN" --id "$SID" --type .sens
+python download-scannet.py -o "$SCAN" --id "$SID" --type _vh_clean_2.ply
+
+# 2. extract the GT for one auto-selected frame: depth.npy, intr_depth.npy, c2w.npy + the RGB frame
+conda run -n iris python scripts/prep_gt.py \
+    "$SCAN/scans/$SID/$SID.sens"  "$SCAN/${SID%_00}_frames"  "$SCAN/${SID%_00}_gt"
+
+# 3. run IRIS on that single frame, RGB-D (sensor depth -> metric scale); --skip_3d for the visible-F1 eval
+conda run -n iris python src/pipeline.py \
+    --image "$SCAN/${SID%_00}_frames"/*.jpg  --depth "$SCAN/${SID%_00}_gt/depth.npy" \
+    --output_dir "output_$SID"  --skip_3d
+
+# 4. score visible F1 + reconstruction accuracy against the GT mesh (pose-anchored alignment)
+conda run -n iris python scripts/benchmark_scannet.py \
+    "output_$SID"  "$SCAN/scans/$SID"  "$SCAN/${SID%_00}_gt"  0.05
+```
+
+`prep_gt.py` auto-selects a content-rich frame (good depth coverage, object-range
+median depth); `benchmark_scannet.py` seats the recon via the **input** camera pose
+and scores only against the GT mesh (never aligns to it). The per-scene F1 / accuracy
+it prints are the table rows above.
+
 **Speed & robustness vs. closest prior work (Gen3DSR, 3DV'25), same ScanNet frame:**
 
 | | **IRIS** | Gen3DSR |
