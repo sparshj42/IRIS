@@ -34,7 +34,7 @@ RGB image
      • store result as a same-pose synthetic view
    │
    ▼
-[B2] Image-to-3D (deferred) ...... Amodal3R (default) / TRELLIS / Wonder3D / TIGON
+[B2] Image-to-3D (deferred) ...... Amodal3R (default) / TRELLIS
    │                                → per-object point cloud
    ▼
 [C] Multi-view reconstruction .... VGGT     → scene point cloud + per-pixel
@@ -137,11 +137,12 @@ same-pose synthetic view; the object's crop + mask are saved for phase B2.
 
 **[B2] Image-to-3D (deferred).** Each saved object crop → an image-to-3D backend →
 a point cloud. The default is **Amodal3R** (occlusion-aware: it consumes the
-occluder mask and reconstructs the complete object through occlusion);
-**TRELLIS**, **Wonder3D** (cross-domain multi-view diffusion + visual-hull carve),
-and **TIGON** are selectable via `--image3d`. Each backend runs in its own pinned
-conda env behind a line-protocol subprocess worker (`src/*_worker.py`), deferred to
-its own phase so the worker has the GPU to itself.
+occluder mask and reconstructs the complete object through occlusion); image-only
+**TRELLIS** is selectable as a baseline via `--image3d trellis`. Each backend runs
+in its own pinned conda env behind a line-protocol subprocess worker
+(`src/*_worker.py`), deferred to its own phase so the worker has the GPU to itself.
+(Other backends we evaluated but did not keep — TIGON, Wonder3D, SplAttN, TripoSR —
+are credited in [attribution.md](attribution.md).)
 
 **[C] Multi-view reconstruction.** All synthetic views go to VGGT, which returns
 per-view per-pixel world points + confidence. Confidence-thresholded points form
@@ -185,8 +186,8 @@ resolves occlusion*. Reconstructed objects are filled to solid **occupied** volu
 
 ## Engineering notes
 
-- **Multi-env isolation.** The image-to-3D backends (Amodal3R, TRELLIS, Wonder3D,
-  TIGON) need mutually incompatible dependencies, so each runs in its own conda env
+- **Multi-env isolation.** The image-to-3D backends (Amodal3R, TRELLIS) need
+  dependencies incompatible with the main stack, so each runs in its own conda env
   behind a line-protocol subprocess worker `src/*_worker.py` (see [ax.md](ax.md)
   §3). The main pipeline stays on one consistent stack and talks to the worker over
   a tiny `@@`-prefixed stdin/stdout protocol.

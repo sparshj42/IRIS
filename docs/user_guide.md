@@ -25,10 +25,10 @@ Image-to-3D is swappable via `--image3d`; the alternatives are documented in
 
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `--image` | `data/test.png` | input RGB image (single-frame, IRIS's main mode) |
+| `--image` | `data/test3.png` | input RGB image (single-frame, IRIS's main mode) |
 | `--scene_dir` | – | folder of images (multi-view); overrides `--image` |
 | `--output_dir` | `output` | where artifacts are written |
-| `--image3d` | `trellis` | per-object 3D backend: `amodal3r` (occlusion-aware, recommended), `trellis`, `wonder3d`, `tigon`, `splattn` |
+| `--image3d` | `amodal3r` | per-object 3D backend: `amodal3r` (occlusion-aware, default) or `trellis` (image-only baseline) |
 | `--sparse_depth` | – | `.npy` of (row,col,metric_depth) ~500 px; makes the **whole reconstruction metric** (scales VGGT via median depth ratio) for the `<2 cm` KPI |
 | `--skip_3d` | off | skip per-object image-to-3D; fused recon = VGGT scene only |
 | `--resume` | off | skip phases whose outputs already exist (crash recovery) |

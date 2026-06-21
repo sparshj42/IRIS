@@ -23,7 +23,7 @@ every model in the solution is open-weight and runs locally, and (b) that the
 | Monocular depth | Depth Anything V2 (Large) | `depth-anything/Depth-Anything-V2-Large-hf` | Apache-2.0 |
 | Object removal | RORem (SDXL-inpainting UNet) | base `diffusers/stable-diffusion-xl-1.0-inpainting-0.1` | OpenRAIL / open weights |
 | Image-to-3D (default, occlusion-aware) | Amodal3R | `Sm0kyWu/Amodal3R` | open weights |
-| Image-to-3D (alternatives) | TRELLIS · Wonder3D · TIGON | `microsoft/TRELLIS-image-large` etc. | MIT / open |
+| Image-to-3D (baseline) | TRELLIS | `microsoft/TRELLIS-image-large` | MIT / open |
 | Pose-free multi-view recon | VGGT-1B | `facebook/VGGT-1B` | open weights |
 | 2D semantic segmentation | Mask2Former (Swin-L, ADE20K) | `facebook/mask2former-swin-large-ade-semantic` | open weights |
 | Mesh extraction | Marching Cubes | (algorithm, via scikit-image) | — |
@@ -117,8 +117,8 @@ With more compute we re-ran the same evidence-first loop on every stage:
   On a cluttered frame the old sort led the peel with a floor cable; the new one
   correctly leads with the foreground chair.
 - **Occlusion-aware image-to-3D.** Added **Amodal3R** (consumes the occluder mask)
-  as the default, plus **Wonder3D** (multi-view diffusion + visual-hull carve) —
-  each as a pinned-env subprocess worker, the same isolation pattern as before.
+  as the default, with image-only **TRELLIS** as a baseline — each a pinned-env
+  subprocess worker, the same isolation pattern as before.
 - **Gravity-aligned output + instance semantics.** The recon is rotated so the
   estimated floor normal points up (fixing "tilted/floating" outputs in a viewer),
   and labels now come from the SAM3 instance masks + VLM names rather than a coarse

@@ -35,7 +35,7 @@ import config
 # CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
 parser = argparse.ArgumentParser(description="IRIS pipeline")
-parser.add_argument("--image", default="data/test.png", help="input RGB image")
+parser.add_argument("--image", default="data/test3.png", help="input RGB image")
 parser.add_argument("--scene_dir", default=None,
                     help="folder of images (multi-view); overrides --image")
 parser.add_argument("--sparse_depth", default=None,
@@ -211,18 +211,18 @@ class Image3DWorker:
     PNG (+ optional text label). Output: a point cloud (gaussian xyz).
 
     Backends (both built on the TRELLIS gaussian decoder, same xyz+rgb contract):
-      - "amodal3r": occlusion-aware Amodal3R (TRELLIS fork), `tigon` env (shares its
-                    deps). Takes the object's mask in addition to the crop;
-                    reconstructs the complete object, tolerating occlusion. Default.
+      - "amodal3r": occlusion-aware Amodal3R (TRELLIS fork), `amodal3r` env. Takes the
+                    object's mask in addition to the crop; reconstructs the complete
+                    object, tolerating occlusion. Default.
       - "trellis":  image-only TRELLIS-image-large, `trellis` env, cwd = repo root.
     """
 
     _CFG = {
-        "amodal3r": dict(env="tigon",    script="src/amodal3r_worker.py", cwd=None),
+        "amodal3r": dict(env="amodal3r", script="src/amodal3r_worker.py", cwd=None),
         "trellis":  dict(env="trellis",  script="src/trellis_worker.py",  cwd=None),
     }
 
-    def __init__(self, backend: str = "trellis"):
+    def __init__(self, backend: str = "amodal3r"):
         import subprocess
         import tempfile
         if backend not in self._CFG:
@@ -233,12 +233,12 @@ class Image3DWorker:
         self.tmp = tempfile.mkdtemp(prefix=f"{backend}worker_")
         self.log = open(os.path.join(self.tmp, "worker.log"), "w")
         env = dict(os.environ, ATTN_BACKEND="xformers", SPCONV_ALGO="native")
-        # prepend the worker env's bin so its tools (e.g. ninja, needed by
-        # knn_cuda's JIT build for splattn) are found — the subprocess otherwise
-        # inherits the parent (iris) env's PATH, not the worker env's.
+        # prepend the worker env's bin so its tools (e.g. ninja, for any JIT CUDA
+        # builds) are found — the subprocess otherwise inherits the parent (iris)
+        # env's PATH, not the worker env's.
         env["PATH"] = os.path.dirname(pybin) + os.pathsep + env.get("PATH", "")
-        # worker script path must be absolute since the worker may run from a
-        # different cwd (TIGON resolves ./external and ./mix_e2e_pipe relatively).
+        # absolute worker script path: the worker adds models/<repo> to sys.path
+        # relative to the repo root, so it must be launched from there.
         script = os.path.join(config.REPO_ROOT, cfg["script"])
         self.proc = subprocess.Popen(
             [pybin, "-u", script],

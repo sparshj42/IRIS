@@ -26,7 +26,7 @@ distinction the problem requires.
 ```
 RGB → VLM discovery (Qwen3-VL) → for each object, nearest-first:
         SAM3 segment · DepthAnythingV2 + occlusion-graph order · RORem erase
-      → per-object image-to-3D (Amodal3R / TRELLIS / Wonder3D)
+      → per-object image-to-3D (Amodal3R / TRELLIS)
       → VGGT scene recon on same-pose views → gravity-aligned register + fuse
       → instance-aware semantic labeling → Marching-Cubes mesh
       → free / occupied / occluded occupancy grid
@@ -50,7 +50,7 @@ See [docs/architecture.md](docs/architecture.md) for the full technical breakdow
   | Monocular depth (peel ordering) | [Depth Anything V2 Large](https://huggingface.co/depth-anything/Depth-Anything-V2-Large-hf) |
   | Object removal / inpainting | [RORem](https://github.com/leeruibin/RORem) on [SDXL-Inpainting](https://huggingface.co/diffusers/stable-diffusion-xl-1.0-inpainting-0.1) |
   | Image-to-3D (occlusion-aware, default) | [Amodal3R](https://github.com/Sm0kyWu/Amodal3R) |
-  | Image-to-3D (alternatives) | [TRELLIS-image-large](https://huggingface.co/microsoft/TRELLIS-image-large) · [Wonder3D](https://github.com/xxlong0/Wonder3D) · [TIGON](https://jumpat.github.io/tigon-page/) |
+  | Image-to-3D (baseline) | [TRELLIS-image-large](https://huggingface.co/microsoft/TRELLIS-image-large) |
   | Multi-view scene reconstruction | [VGGT-1B](https://huggingface.co/facebook/VGGT-1B) |
   | Semantic labeling (background stuff) | [Mask2Former Swin-L ADE](https://huggingface.co/facebook/mask2former-swin-large-ade-semantic) |
 

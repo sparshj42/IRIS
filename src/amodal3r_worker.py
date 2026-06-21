@@ -2,9 +2,9 @@
 
 Amodal3R is a TRELLIS fork that reconstructs the *complete* object from a possibly
 occluded view, guided by a mask that marks the visible target (and, optionally, the
-occluder). It runs in the `tigon` conda env, which already provides the TRELLIS
-stack (spconv, xformers, utils3d). Output is an object point cloud (gaussian xyz) —
-the same contract as the trellis/tigon workers, so it drops into IRIS Phase B2.
+occluder). It runs in the `amodal3r` conda env, which provides the TRELLIS stack
+(spconv, xformers, utils3d). Output is an object point cloud (gaussian xyz) — the
+same contract as the trellis worker, so it drops into IRIS Phase B2.
 
 IRIS already segments every object with SAM3, so the worker is handed that mask
 (letterboxed to the crop frame) and encodes it the way Amodal3R expects:

@@ -3,9 +3,10 @@
 # IRIS reproducible setup — creates the conda envs and clones the third-party
 # model repos. Portable: uses conda env NAMES (no hardcoded home paths).
 #
-#   bash scripts/setup_envs.sh            # both envs
+#   bash scripts/setup_envs.sh            # all envs (iris + amodal3r + trellis)
 #   bash scripts/setup_envs.sh iris       # just the main env
-#   bash scripts/setup_envs.sh trellis    # just the TRELLIS env (+ repo)
+#   bash scripts/setup_envs.sh amodal3r   # just the Amodal3R env (default backend, +repo)
+#   bash scripts/setup_envs.sh trellis    # just the TRELLIS env (baseline backend, +repo)
 #
 # After this: python scripts/fetch_weights.py   (downloads RORem)
 # ============================================================================
@@ -58,6 +59,29 @@ if [ "$WHAT" = all ] || [ "$WHAT" = trellis ]; then
   printf '' > "$SP/kaolin/utils/__init__.py"
   printf 'def check_tensor(*a, **k):\n    return True\n' > "$SP/kaolin/utils/testing.py"
   echo ">>> [trellis] done"
+fi
+
+# --------------------------------------------- Amodal3R (default, occlusion-aware image->3D)
+# Amodal3R is a TRELLIS fork; IRIS uses its gaussian path only, so we install the same
+# lightweight stack as the trellis env (spconv/xformers/utils3d, no mesh CUDA builds) and
+# clone the repo onto the path. For the full mesh pipeline see Amodal3R's own setup.sh.
+if [ "$WHAT" = all ] || [ "$WHAT" = amodal3r ]; then
+  echo ">>> [amodal3r] env + repo (default backend; occlusion-aware; gaussian path)"
+  [ -d models/Amodal3R ] || git clone https://github.com/Sm0kyWu/Amodal3R models/Amodal3R
+  conda create -n amodal3r python=3.10 -y
+  pipx amodal3r torch==2.4.0 torchvision==0.19.0 --index-url https://download.pytorch.org/whl/cu118
+  pipx amodal3r pillow imageio imageio-ffmpeg tqdm easydict opencv-python-headless \
+      scipy ninja rembg onnxruntime trimesh open3d xatlas pyvista pymeshfix igraph \
+      transformers safetensors spconv-cu118
+  pipx amodal3r xformers==0.0.27.post2 --index-url https://download.pytorch.org/whl/cu118
+  pipx amodal3r git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8
+  # same kaolin stub as trellis (flexicubes import at load; gaussian path never runs it)
+  SP=$(conda run -n amodal3r python -c "import site; print(site.getsitepackages()[0])")
+  mkdir -p "$SP/kaolin/utils"
+  printf '' > "$SP/kaolin/__init__.py"
+  printf '' > "$SP/kaolin/utils/__init__.py"
+  printf 'def check_tensor(*a, **k):\n    return True\n' > "$SP/kaolin/utils/testing.py"
+  echo ">>> [amodal3r] done"
 fi
 
 echo ""
