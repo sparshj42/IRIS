@@ -200,6 +200,9 @@ versus an earlier intrinsic-guess labeler that produced 100 % "other".
 
 ## Efficiency
 
-- Runs end-to-end on a single 24 GB GPU; fits ≤12 GB with the planned
-  `--low-vram` path (4-bit VLM, CPU-offload removal, fewer VGGT views).
+- Runs end-to-end on a single GPU. The 32B discovery VLM is the memory peak and
+  expects a large card (e.g. H100 80 GB); set `IRIS_VLM_ID=Qwen/Qwen3-VL-8B-Instruct`
+  to fit a 24 GB GPU (~16 GB), with the rest of the pipeline comfortably alongside.
+- The image-to-3D and VLM stages run in isolated phases/subprocesses, so peak VRAM
+  is one heavy model at a time, not all of them at once.
 - Crash-resilient (per-object checkpointing, `--resume`, staged execution).

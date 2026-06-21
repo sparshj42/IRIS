@@ -5,14 +5,14 @@ IRIS: Iterative Reconstruction via Incremental Scene-peeling
               - re-evaluate mask on current image state  (SAM3)
               - depth ordering                           (DepthAnything V2)
               - object removal revealing what's behind   (RORem)
-  Phase B2: Image-to-3D (deferred)      (TRELLIS; skip with --skip_3d)
+  Phase B2: Image-to-3D (deferred)      (Amodal3R / TRELLIS; skip with --skip_3d)
   Phase C : Scene Reconstruction        (VGGT on same-pose synthetic views)
   Phase D : Rigid Registration + Fusion (mask-guided init + ICP, Open3D)
   Phase E : Semantic Labeling           (Mask2Former, multi-view voting)
   Phase F : Mesh Generation             (Marching Cubes)
   Phase G : Occupancy                   (free / occupied / occluded ray-cast)
 
-Models are loaded/freed in phases. TRELLIS runs in a pinned-env subprocess worker.
+Models are loaded/freed in phases. Image-to-3D runs in a pinned-env subprocess worker.
 """
 
 import argparse
@@ -90,7 +90,7 @@ else:
 OUTPUT_DIR = args.output_dir
 VIEWS_DIR = os.path.join(OUTPUT_DIR, "synthetic_views")
 MESH_DIR = os.path.join(OUTPUT_DIR, "meshes")
-CROPS_DIR = os.path.join(OUTPUT_DIR, "object_crops")   # for the deferred TRELLIS phase
+CROPS_DIR = os.path.join(OUTPUT_DIR, "object_crops")   # for the deferred image-to-3D phase
 os.makedirs(VIEWS_DIR, exist_ok=True)
 os.makedirs(MESH_DIR, exist_ok=True)
 os.makedirs(CROPS_DIR, exist_ok=True)
@@ -289,8 +289,8 @@ print("\n" + "=" * 60)
 print("[Phase A] Object discovery (Qwen3-VL)")
 print("=" * 60)
 
-# The 8B VLM is run in its own subprocess so the OS fully reclaims its ~16 GB
-# of VRAM on exit (device_map="auto" leaves accelerate hooks that don't free
+# The VLM (32B by default) is run in its own subprocess so the OS fully reclaims
+# its VRAM on exit (device_map="auto" leaves accelerate hooks that don't free
 # cleanly in-process, which OOMs the multi-model Phase B that follows).
 import subprocess
 step0 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "step0_vlm.py")
@@ -386,7 +386,7 @@ def mask_iou(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def consolidate_instances(instances: list, img_area: int) -> list:
-    """Tame instance explosion from DINO:
+    """Tame instance explosion from the segmenter:
     - dedupe same-label detections that overlap heavily (IoU > 0.5, keep best score)
     - merge same-label instances into one union mask when they are individually
       small (e.g. 10 toy blocks → one 'blocks' peel); keep large ones separate
