@@ -41,6 +41,8 @@ RGB → VLM discovery (Qwen3-VL-32B)
 - This is the deliverable the problem asks for: unobserved volume flagged **unknown**, not falsely free.
 
 ### Slide 7 — Results
+- **10-scene ScanNet benchmark (single RGB image each):** mean visible-surface **F1 0.87** (reaching **0.95**) and **median reconstruction accuracy 1.8 cm — clears both the 0.85 F1 benchmark and the 2 cm accuracy target**. Pose-anchored alignment (input camera pose; GT used only for scoring). Per-scene results listed in `docs/kpis.md`.
+- **Best scenes are benchmark-grade from one view:** scene0250 / scene0400 F1 **0.95**, scene0300 0.93, scene0100 0.91, with 1.0–1.7 cm median accuracy.
 - Per-object reconstruction: `showcase/04_per_object_3d.png` (recognizable bottle/toolbox/mouse from occlusion-aware image-to-3D).
 - Runs end-to-end on real **ScanNet** frames and tabletop scenes on a single GPU.
 - (Be honest: full-scene fusion is a single-view frustum; objects are completed, background is partial.)

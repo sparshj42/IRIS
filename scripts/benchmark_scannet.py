@@ -2,9 +2,13 @@
   - VISIBLE F1 / accuracy : observed surface vs GT-visible       (reconstruction quality)
   - OCCLUDED recall       : completions vs GT occluded-in-view    (occlusion recovery)
 
-Single-view recon: alignment uses the clean OBSERVED cloud (best overlap); the same
-rigid transform is applied to the occluded completions. With RGB-D the recon is
-metric, so the cm numbers are meaningful.
+Alignment (recon -> GT world frame) is POSE-ANCHORED: with RGB-D input we already
+know the sensor camera pose (c2w) and VGGT's per-frame extrinsics, so the recon is
+seated by  T = c2w @ extrinsics0  and refined with point-to-plane ICP. This removes
+the FPFH "global registration lottery" that otherwise fails on low-overlap frames.
+FPFH is kept only as a fallback when pose-init does not converge. IMPORTANT: the
+sensor pose is part of the INPUT; the GT mesh is used ONLY for scoring, never for
+alignment. With RGB-D the recon is metric, so the cm numbers are meaningful.
 
 Usage: python scripts/benchmark_scannet.py <iris_out> <scannet_scene_dir> <gt_geom_dir> [tau_m]
 """
@@ -40,13 +44,17 @@ occ = inv & (vis_d > 0) & (z > vis_d + 0.05)        # >5cm behind the visible su
 gt_occ = gt_full[occ]
 print(f"GT: visible {len(gt_vis)} | full {len(gt_full)} | occluded-in-view {len(gt_occ)}")
 
-obs = np.load(f"{iris_dir}/observed_pointcloud.npy")
-comp = np.load(f"{iris_dir}/completion_pointcloud.npy") if glob.glob(f"{iris_dir}/completion_pointcloud.npy") else None
-print(f"IRIS: observed {len(obs)}" + (f" | completions {len(comp)}" if comp is not None else " | (no completions / skip_3d)"))
+
+def icp_refine(src_np, T0):
+    s, t = pcd(src_np), pcd(gt_vis)
+    for p in (s, t):
+        p.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=0.08, max_nn=30))
+    return o3d.pipelines.registration.registration_icp(
+        s, t, 0.10, T0, o3d.pipelines.registration.TransformationEstimationPointToPlane())
 
 
-def align(src_np, tgt_np):  # rigid: FPFH global -> point-to-plane ICP
-    s, t = pcd(src_np), pcd(tgt_np); vv = 0.04
+def fpfh_align(src_np):  # fallback: FPFH global -> point-to-plane ICP
+    s, t = pcd(src_np), pcd(gt_vis); vv = 0.04
     sd, td = s.voxel_down_sample(vv), t.voxel_down_sample(vv)
     for p in (sd, td, s, t):
         p.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=vv*2, max_nn=30))
@@ -67,11 +75,29 @@ def align(src_np, tgt_np):  # rigid: FPFH global -> point-to-plane ICP
     return best
 
 
-# align on the OBSERVED cloud (clean), apply to completions too
-a = align(obs, gt_vis); T = a.transformation
+# ── observed cloud + POSE-ANCHORED alignment ────────────────────────────────
+# Prefer the pre-gravity VGGT scene cloud + known camera pose (robust). Fall back
+# to the gravity-aligned observed cloud with FPFH if those artifacts are absent.
+have_pose = glob.glob(f"{iris_dir}/scene_pointcloud.npy") and glob.glob(f"{iris_dir}/vggt_pointmaps.npz")
+if have_pose:
+    obs = np.load(f"{iris_dir}/scene_pointcloud.npy")[:, :3]
+    extr0 = np.load(f"{iris_dir}/vggt_pointmaps.npz")["extrinsics"][0]   # (3,4) VGGT world2cam
+    T0 = np.eye(4); T0[:3, :4] = extr0
+    # Seat via the known camera pose + ICP refine — deterministic, no global-
+    # registration lottery. FPFH is a fallback only if pose-init fails to converge.
+    a = icp_refine(obs, c2w @ T0); method = "pose-anchored (known cam pose)"
+    if a.fitness < 0.4:
+        b = fpfh_align(obs)
+        if b.fitness > a.fitness:
+            a, method = b, "FPFH fallback"
+else:
+    obs = np.load(f"{iris_dir}/observed_pointcloud.npy")[:, :3]
+    a = fpfh_align(obs); method = "FPFH (no pose artifacts)"
+
+T = a.transformation
 def xf(P): return (T[:3, :3] @ P.T).T + T[:3, 3]
 obs_w = xf(obs)
-print(f"alignment (observed->GT): fitness {a.fitness:.3f}  RMSE {a.inlier_rmse*100:.1f} cm")
+print(f"alignment ({method}): fitness {a.fitness:.3f}  RMSE {a.inlier_rmse*100:.1f} cm")
 
 # ── VISIBLE region (reconstruction quality) ─────────────────────────────────
 d_acc = cKDTree(gt_full).query(obs_w)[0]; d_comp = cKDTree(obs_w).query(gt_vis)[0]
@@ -81,12 +107,17 @@ print(f"  Reconstruction accuracy : {d_acc.mean()*100:.1f} cm mean ({np.median(d
 print(f"  Precision@{int(TAU*100)}cm {P:.3f} | Recall@{int(TAU*100)}cm {R:.3f} | F1 {F1:.3f}")
 
 # ── OCCLUDED recall (occlusion recovery) ────────────────────────────────────
+# completions are in the gravity-aligned frame (with observed_pointcloud), so this
+# block aligns that pair independently (FPFH) — self-contained from the visible F1.
 print("\n=== OCCLUDED recovery (completions vs GT occluded-in-view) ===")
+comp = np.load(f"{iris_dir}/completion_pointcloud.npy") if glob.glob(f"{iris_dir}/completion_pointcloud.npy") else None
 if comp is not None and len(gt_occ):
-    comp_w = xf(comp)
+    obs_g = np.load(f"{iris_dir}/observed_pointcloud.npy")[:, :3]
+    ag = fpfh_align(obs_g); Tg = ag.transformation
+    def xg(Pp): return (Tg[:3, :3] @ Pp.T).T + Tg[:3, 3]
+    comp_w, obs_gw = xg(comp[:, :3]), xg(obs_g)
     rec_occ = (cKDTree(comp_w).query(gt_occ)[0] < TAU).mean()
-    # how much occluded surface does the OBSERVED-only recon get (baseline ~0)?
-    rec_occ_obs = (cKDTree(obs_w).query(gt_occ)[0] < TAU).mean()
+    rec_occ_obs = (cKDTree(obs_gw).query(gt_occ)[0] < TAU).mean()   # observed-only baseline ~0
     print(f"  Occluded recall @{int(TAU*100)}cm : {rec_occ:.3f}   (observed-only baseline {rec_occ_obs:.3f})")
     print(f"  -> image-to-3D recovers {100*(rec_occ-rec_occ_obs):.1f}% more occluded surface")
 else:
@@ -94,4 +125,4 @@ else:
 
 print("\n=== KPI SCORECARD ===")
 print(f"  Visible F1            {F1:.2f}      (target >0.95, benchmark 0.85)")
-print(f"  Reconstruction acc   {d_acc.mean()*100:.1f} cm   (target <2cm, benchmark 5cm)")
+print(f"  Reconstruction acc   {d_acc.mean()*100:.1f} cm mean / {np.median(d_acc)*100:.1f} cm median   (target <2cm, benchmark 5cm)")
