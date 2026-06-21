@@ -68,9 +68,9 @@ many sessions via a persistent file-based memory.
   incompatible dependencies (PowerPaint wants transformers 4.28 / diffusers 0.27;
   TRELLIS wants torch 2.4 / numpy<2; DA3 wants numpy<2). Rather than break the
   main `iris` env, each ran in its **own conda env behind a line-protocol
-  subprocess worker** (`src/powerpaint_worker.py`, `src/trellis_worker.py`). This
-  isolation pattern was the single most useful piece of engineering — it let us
-  trial four extra models without dependency hell.
+  subprocess worker** (`src/*_worker.py`). This isolation pattern was the single
+  most useful piece of engineering — it let us trial extra models without
+  dependency hell. (The kept workers are `amodal3r_worker.py`, `trellis_worker.py`.)
 - **Crash-resilient staging.** The build machine (a desktop RTX 3090) suffered
   repeated *hard power-offs* under sustained GPU load. We mitigated with a GPU
   power cap, per-object peel checkpointing, and splitting the run into resumable

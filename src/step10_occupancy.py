@@ -11,7 +11,7 @@ camera through VGGT's per-pixel world points:
 Because the synthetic views are SAME-POSE, each peeled view re-casts the same rays
 but reaches deeper, so previously-occluded space behind a removed object gets
 re-marked free/occupied automatically — peeling resolves occlusion. Object backs
-are marked occupied via the fused TRELLIS reconstruction (learned-prior completion).
+are marked occupied via the fused image-to-3D reconstruction (learned-prior completion).
 
 Inputs : output/vggt_pointmaps.npz (world_points, conf, extrinsics), fused cloud
 Outputs: output/occupancy_grid.npy (int8: 0=occluded,1=free,2=occupied),

@@ -53,8 +53,11 @@ RGB image
 [G] Occupancy classification ..... ray-cast voxel grid → FREE / OCCUPIED / OCCLUDED
 ```
 
-Implementation: a single orchestrator [src/pipeline.py](../src/pipeline.py); each
-stage is also runnable standalone as `src/stepN_*.py`.
+Implementation: a single self-contained orchestrator
+[src/pipeline.py](../src/pipeline.py) that runs all phases inline. The VLM discovery
+phase runs as a subprocess (`src/step0_vlm.py`, so its VRAM is freed before peeling)
+and occupancy is a module (`src/step10_occupancy.py`); the image-to-3D backends are
+subprocess workers (`src/*_worker.py`).
 
 ## Occlusion-graph peel ordering — a core contribution
 

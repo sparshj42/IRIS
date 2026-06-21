@@ -9,15 +9,13 @@ license.
 
 | Project | Used for | Link |
 |---------|----------|------|
-| Qwen3-VL | object discovery (VLM) | https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct |
+| Qwen3-VL | object discovery (VLM) | https://huggingface.co/Qwen/Qwen3-VL-32B-Instruct |
 | SAM 3 (Segment Anything 3) | grounded segmentation | https://huggingface.co/facebook/sam3 |
 | Depth Anything V2 | monocular depth | https://github.com/DepthAnything/Depth-Anything-V2 |
 | RORem | object removal | https://github.com/leeruibin/RORem |
 | Stable Diffusion XL Inpainting | RORem base pipeline | https://huggingface.co/diffusers/stable-diffusion-xl-1.0-inpainting-0.1 |
-| Amodal3R | occlusion-aware image-to-3D (default backend) | https://github.com/Sm0kyWu/Amodal3R |
-| TRELLIS | image-to-3D (selectable backend; Amodal3R/Wonder3D built on its gaussian decoder) | https://github.com/microsoft/TRELLIS |
-| Wonder3D | image-to-3D via cross-domain multi-view diffusion (selectable backend) | https://github.com/xxlong0/Wonder3D |
-| TIGON | text+image image-to-3D (selectable backend) | https://jumpat.github.io/tigon-page/ |
+| Amodal3R | occlusion-aware image-to-3D (default backend; built on TRELLIS's gaussian decoder) | https://github.com/Sm0kyWu/Amodal3R |
+| TRELLIS | image-to-3D (selectable baseline backend) | https://github.com/microsoft/TRELLIS |
 | VGGT | pose-free multi-view reconstruction | https://github.com/facebookresearch/vggt |
 | Mask2Former | 2D semantic segmentation (background "stuff" labels) | https://huggingface.co/facebook/mask2former-swin-large-ade-semantic |
 
@@ -25,14 +23,15 @@ license.
 
 | Project | Outcome | Link |
 |---------|---------|------|
-| TripoSR | image-to-3D, kept as light fallback (TRELLIS preferred) | https://github.com/VAST-AI-Research/TripoSR |
+| Wonder3D | image-to-3D via cross-domain multi-view diffusion, explored (not kept) | https://github.com/xxlong0/Wonder3D |
+| TIGON | text+image image-to-3D, explored (not kept) | https://jumpat.github.io/tigon-page/ |
+| TripoSR | image-to-3D, explored (TRELLIS preferred) | https://github.com/VAST-AI-Research/TripoSR |
 | Grounding DINO + SAM 2 | segmentation, replaced by SAM 3 | https://github.com/IDEA-Research/GroundingDINO |
-| LaMa (simple-lama-inpainting) | removal, kept as low-power fallback | https://github.com/advimman/lama |
+| LaMa (simple-lama-inpainting) | removal, explored (RORem preferred) | https://github.com/advimman/lama |
 | PowerPaint v2 | removal, rejected (hallucinated) | https://github.com/open-mmlab/PowerPaint |
 | Depth Anything 3 | multi-view, shelved (marginal vs VGGT) | https://github.com/ByteDance-Seed/depth-anything-3 |
 | InstantMesh | image-to-3D, explored | https://github.com/TencentARC/InstantMesh |
 | SplAttN | image-guided point-cloud completion, explored (fills viewpoint not scene occlusion) | https://github.com/zay002/SplAttN |
-| Pixel3D / Pixal3D | image-to-3D, explored | https://github.com/TencentARC/InstantMesh |
 | GenPC | point-cloud completion, explored | https://github.com/Sangminhong/GenPC |
 
 ## Baselines compared against

@@ -38,7 +38,7 @@ See [docs/architecture.md](docs/architecture.md) for the full technical breakdow
 
 ## Project Artefacts
 
-- **Source code** — [src/](src/) — orchestrator [`pipeline.py`](src/pipeline.py) plus standalone `stepN_*.py` stages and per-backend image-to-3D workers (`*_worker.py`). Run via `python src/pipeline.py` (see [docs/user_guide.md](docs/user_guide.md)).
+- **Source code** — [src/](src/) — the self-contained orchestrator [`pipeline.py`](src/pipeline.py), the VLM discovery step it runs as a subprocess (`step0_vlm.py`), the occupancy module (`step10_occupancy.py`), and the per-backend image-to-3D workers (`*_worker.py`). Run via `python src/pipeline.py` (see [docs/user_guide.md](docs/user_guide.md)).
 - **Documentation** — [docs/](docs/): [architecture](docs/architecture.md) · [installation](docs/installation.md) · [user guide](docs/user_guide.md) · [evaluation/KPIs](docs/kpis.md) · [ax.md](docs/ax.md) · [attribution](docs/attribution.md)
 
 - **Models Used** (all open-weight, run locally):

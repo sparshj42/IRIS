@@ -100,7 +100,11 @@ python src/pipeline.py --image rgb.png --sparse_depth sparse.npy --output_dir ou
 Without `--sparse_depth` the reconstruction is up-to-scale (fine for the
 occlusion/semantic outputs; required only for the metric `<2 cm` KPI).
 
-## Standalone steps
+## Re-running occupancy standalone
 
-Each stage is also a standalone script (`src/step0_vlm.py` … `src/step9_mesh.py`)
-that reads/writes intermediate artifacts, useful for debugging a single stage.
+`pipeline.py` is the single entry point (all phases run inline). Occupancy can be
+recomputed on an existing run's artifacts without re-running the pipeline:
+
+```bash
+python src/step10_occupancy.py --output_dir output --grid 160
+```
