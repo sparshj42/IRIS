@@ -57,8 +57,8 @@ def main():
             rgb = np.clip(0.2820947917738781 * fdc + 0.5, 0, 1)   # SH degree-0 -> RGB
             pc = np.concatenate([xyz, rgb], axis=1)               # (N, 6): xyz + colour
             sys.stdout = r
-            if len(pc) > n:                        # uniform subsample to n points
-                pc = pc[np.random.choice(len(pc), n, replace=False)]
+            if len(pc) > n:                        # uniform subsample to n points (seeded → reproducible)
+                pc = pc[np.random.default_rng(0).choice(len(pc), n, replace=False)]
             np.save(req["out"], pc.astype(np.float32))
             print(f"@@OK {req['out']}", flush=True)
         except Exception as e:

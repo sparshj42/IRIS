@@ -36,6 +36,12 @@ import numpy as np
 import torch
 from PIL import Image
 
+# Determinism: pin RNGs so re-runs are reproducible — e.g. the yaw chosen for a
+# rotationally-symmetric object stays stable instead of flipping between runs.
+# (Image-to-3D workers run in separate processes and seed themselves too.)
+np.random.seed(0)
+torch.manual_seed(0)
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # src/ on path
 import config
 
@@ -74,7 +80,7 @@ if args.depth and not args.sparse_depth:
     _d = _np.load(args.depth).astype(_np.float32)
     _ys, _xs = _np.where(_d > 1e-3)
     if len(_ys):
-        _sel = _np.random.choice(len(_ys), min(3000, len(_ys)), replace=False)
+        _sel = _np.random.default_rng(0).choice(len(_ys), min(3000, len(_ys)), replace=False)
         _sp = _np.stack([_ys[_sel], _xs[_sel], _d[_ys[_sel], _xs[_sel]]], 1).astype(_np.float32)
         _spp = os.path.join(args.output_dir, "_depth_sparse.npy")
         _np.save(_spp, _sp)
