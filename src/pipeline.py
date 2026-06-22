@@ -22,6 +22,14 @@ import pickle
 import sys
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+# Cap CPU thread fan-out BEFORE numpy/Open3D import: Open3D/MKL/OpenBLAS otherwise
+# each spawn ~one thread per core (e.g. 224 on a big box), oversubscribing and
+# stalling the CPU-heavy phases (registration, meshing, occupancy). A modest cap is
+# plenty here (the models run on GPU; CPU isn't the bottleneck). Override by
+# exporting these vars yourself.
+_NT = str(min(16, os.cpu_count() or 16))
+for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_v, _NT)
 
 import cv2
 import numpy as np
@@ -89,10 +97,8 @@ else:
 
 OUTPUT_DIR = args.output_dir
 VIEWS_DIR = os.path.join(OUTPUT_DIR, "synthetic_views")
-MESH_DIR = os.path.join(OUTPUT_DIR, "meshes")
 CROPS_DIR = os.path.join(OUTPUT_DIR, "object_crops")   # for the deferred image-to-3D phase
 os.makedirs(VIEWS_DIR, exist_ok=True)
-os.makedirs(MESH_DIR, exist_ok=True)
 os.makedirs(CROPS_DIR, exist_ok=True)
 
 ROREM_CKPT = config.ROREM_CKPT
@@ -1187,16 +1193,22 @@ else:
         try:
             # mesh each object SEPARATELY (cluster → Poisson → merge) so Poisson
             # doesn't web nearby objects together — cleaner than one combined fit.
+            # Each cluster is downsampled and gets a cheap O(n) normal orientation
+            # (outward from its centre), so this stays ~seconds even under heavy CPU
+            # contention — vs. the Riemannian-graph orient that could stall for minutes.
             lbls = np.array(cpcd.cluster_dbscan(eps=0.03 * scene_diag, min_points=30))
             omesh = o3d.geometry.TriangleMesh()
             for k in range(lbls.max() + 1):
                 sub = cpcd.select_by_index(np.where(lbls == k)[0])
                 if len(sub.points) < 80:
                     continue
+                if len(sub.points) > 3000:                  # cap cost; Poisson quality unaffected at this scale
+                    sub = sub.voxel_down_sample(0.004 * scene_diag)
                 sub.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(
-                    radius=0.04 * scene_diag, max_nn=40))
-                sub.orient_normals_consistent_tangent_plane(20)
-                m, dens = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(sub, depth=9)
+                    radius=0.04 * scene_diag, max_nn=30))
+                sub.orient_normals_towards_camera_location(sub.get_center())   # O(n) inward...
+                sub.normals = o3d.utility.Vector3dVector(-np.asarray(sub.normals))  # ...flip to outward
+                m, dens = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(sub, depth=8)
                 m.remove_vertices_by_mask(np.asarray(dens) < np.quantile(np.asarray(dens), 0.05))
                 omesh += m.crop(sub.get_axis_aligned_bounding_box())
             omesh.compute_vertex_normals()
@@ -1359,9 +1371,9 @@ render_occ(occ_grid, occ_min, occ_voxel, os.path.join(OUTPUT_DIR, "occupancy_ren
 print(f"\n{'='*60}")
 print("IRIS pipeline complete!")
 print(f"  Synthetic views:    {VIEWS_DIR}/")
-print(f"  Object meshes:      {MESH_DIR}/")
 print(f"  Fused point cloud:  {OUTPUT_DIR}/fused_pointcloud.ply")
 print(f"  Labeled cloud:      {OUTPUT_DIR}/labeled_pointcloud.ply")
 print(f"  Semantic mesh:      {mesh_path}")
+print(f"  Objects (colored):  {OUTPUT_DIR}/objects_colored.ply (+ objects_mesh.ply)")
 print(f"  Occupancy grid:     {OUTPUT_DIR}/occupancy_grid.npy (+ occupancy_render.png)")
 print("=" * 60)
