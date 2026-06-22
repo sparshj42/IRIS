@@ -6,9 +6,11 @@ checkpoints/
 *.ckpt
 *.safetensors
 
-# ── Pipeline outputs & intermediates
+# ── Pipeline outputs & intermediates (any naming / capitalisation)
 output/
 output_*/
+[Oo]utput*/
+[Dd]emo[Oo]utput*/
 *.ply
 *.npy
 *.pkl
