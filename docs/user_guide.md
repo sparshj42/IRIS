@@ -39,10 +39,8 @@ Image-to-3D is swappable via `--image3d`; the alternatives are documented in
 | `--sparse_depth` | – | sparse metric scale: `.npy` of (row,col,metric_depth) ~500 px; scales VGGT via median depth ratio. A lighter alternative to `--depth` when only sparse points are available |
 | `--skip_3d` | off | skip per-object image-to-3D; fused recon = VGGT scene only |
 | `--resume` | off | skip phases whose outputs already exist (crash recovery) |
+| `--vlm` | `Qwen/Qwen3-VL-32B-Instruct` | VLM model ID for object discovery. Use `Qwen/Qwen3-VL-8B-Instruct` on GPUs with <24 GB VRAM (RTX 4080 / 3090 etc.). |
 | `--stop_after_peeling` | off | stop after the peel phase |
-
-> Set `IRIS_VLM_ID=Qwen/Qwen3-VL-8B-Instruct` for a lighter (~16 GB) discovery VLM
-> on smaller GPUs; the 32B default expects a large GPU.
 
 ## Input modes: RGB vs RGB-D
 

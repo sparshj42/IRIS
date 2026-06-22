@@ -46,7 +46,7 @@ All optional; defaults resolve under the repo. Set if your layout differs:
 | Env var | Default |
 |---------|---------|
 | `IRIS_ROREM_CKPT` | `checkpoints/RORem` |
-| `IRIS_VLM_ID` | `Qwen/Qwen3-VL-32B-Instruct` (set to the 8B id for a lighter run) |
+| `IRIS_VLM_ID` | `Qwen/Qwen3-VL-32B-Instruct` (override with 8B id for smaller GPUs, or use `--vlm`) |
 | `IRIS_AMODAL3R_DIR` / `IRIS_TRELLIS_DIR` | `models/<name>` |
 | `IRIS_AMODAL3R_PYTHON` / `IRIS_TRELLIS_PYTHON` | auto-detected conda env python |
 
@@ -67,10 +67,11 @@ The worker envs are auto-located via `CONDA_EXE` / common conda roots; override 
 
 ## GPU notes
 
-- The default **32B VLM** is the memory peak (~65 GB, transient — loaded for
-  discovery, freed before peeling), so it expects a large GPU (e.g. H100 80 GB).
-  For a 24 GB card, set `IRIS_VLM_ID=Qwen/Qwen3-VL-8B-Instruct` (~16 GB); the rest
-  of the pipeline fits comfortably.
+- The default **32B VLM** (~65 GB, transient) expects a large GPU (e.g. H100 80 GB).
+  On a smaller card use `--vlm Qwen/Qwen3-VL-8B-Instruct` (or set
+  `IRIS_VLM_ID=Qwen/Qwen3-VL-8B-Instruct`). The 8B model is ~16 GB in bf16:
+  fits comfortably on a 24 GB card; on 12 GB (e.g. RTX 4080) `device_map="auto"`
+  will offload overflow layers to CPU RAM — slower but correct.
 - `--resume` (per-phase / per-object checkpointing) makes a run robust to crashes,
   so a failure costs one object rather than the whole run.
 

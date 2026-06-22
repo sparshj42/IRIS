@@ -70,6 +70,9 @@ parser.add_argument("--image3d", choices=["amodal3r", "trellis"], default="amoda
                          "docs/attribution.md.")
 parser.add_argument("--stop_after_peeling", action="store_true",
                     help="exit after Phase B (for fast removal A/B comparison)")
+parser.add_argument("--vlm", default=None,
+                    help="VLM model ID override (e.g. Qwen/Qwen3-VL-8B-Instruct for GPUs "
+                         "with <24 GB VRAM; default: Qwen/Qwen3-VL-32B-Instruct)")
 args = parser.parse_args()
 
 # RGB-D mode: derive sparse metric points from the dense --depth so the existing
@@ -321,7 +324,10 @@ def _freest_gpu():
 
 
 _vlm_env = dict(os.environ, CUDA_VISIBLE_DEVICES=_freest_gpu())
-print(f"  VLM ({config.VLM_ID}) on GPU {_vlm_env['CUDA_VISIBLE_DEVICES']}")
+if args.vlm:
+    _vlm_env["IRIS_VLM_ID"] = args.vlm
+_vlm_id = args.vlm or config.VLM_ID
+print(f"  VLM ({_vlm_id}) on GPU {_vlm_env['CUDA_VISIBLE_DEVICES']}")
 _all_names = []
 for _img_path in image_list:
     _stem = os.path.splitext(os.path.basename(_img_path))[0]

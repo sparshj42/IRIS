@@ -27,7 +27,7 @@ ROREM_CKPT = _path("IRIS_ROREM_CKPT", "checkpoints", "RORem")
 SDXL_BASE = os.environ.get("IRIS_SDXL_BASE", "diffusers/stable-diffusion-xl-1.0-inpainting-0.1")
 
 # HF model ids (open-weight; auto-download on first use)
-VLM_ID = os.environ.get("IRIS_VLM_ID", "Qwen/Qwen3-VL-32B-Instruct")  # H100: bigger VLM for discovery
+VLM_ID = os.environ.get("IRIS_VLM_ID", "Qwen/Qwen3-VL-32B-Instruct")
 SAM3_ID = "facebook/sam3"
 DEPTH_ID = "depth-anything/Depth-Anything-V2-Large-hf"
 TRELLIS_ID = "microsoft/TRELLIS-image-large"

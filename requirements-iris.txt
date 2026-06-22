@@ -78,7 +78,6 @@ nvidia-nvtx-cu12==12.1.105
 omegaconf==2.3.0
 onnxruntime==1.23.2
 open3d==0.19.0
-opencv-python==4.11.0.86
 opencv-python-headless==4.13.0.92
 pandas==2.3.3
 parso==0.8.7
@@ -137,7 +136,6 @@ typer-config==1.4.0
 typing_extensions==4.15.0
 tzdata==2026.2
 urllib3==2.7.0
-vggt @ git+https://github.com/facebookresearch/vggt.git@a288dd0f14786c93483e45524328726ab7b1b4ce
 wcwidth==0.7.0
 websockets==11.0.3
 Werkzeug==3.1.8
