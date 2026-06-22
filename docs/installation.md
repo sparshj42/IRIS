@@ -21,7 +21,7 @@ bash scripts/setup_envs.sh                 # or: setup_envs.sh iris  (just the m
 conda run -n iris python scripts/fetch_weights.py
 
 # 3. run (default backend = occlusion-aware Amodal3R, in the amodal3r env)
-conda run -n iris python src/pipeline.py --image data/test3.png --output_dir output --image3d amodal3r
+conda run -n iris python src/pipeline.py --image data/demoImage.png --output_dir output --image3d amodal3r
 ```
 
 `setup_envs.sh` builds the `iris` env plus the image-to-3D backend env(s) with their

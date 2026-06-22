@@ -152,8 +152,8 @@ problem statement asks for.
 
 ## Diagnostic results (development log)
 
-These are **earlier-development diagnostics** on `data/test3.png` (a tabletop scene:
-toolbox, bottle, mouse, marker), SAM 3 + RORem + VGGT with the image-to-3D backend
+These are **earlier-development diagnostics** on an earlier tabletop test scene
+(toolbox, bottle, mouse, marker), SAM 3 + RORem + VGGT with the image-to-3D backend
 varied, GPU capped at 150 W. They predate Amodal3R becoming the occlusion-aware
 default — the image-to-3D ablation below is what led from TripoSR to TRELLIS (and,
 later, to Amodal3R). Kept as a record of the A/B decisions; the headline numbers are

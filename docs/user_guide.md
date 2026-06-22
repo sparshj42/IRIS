@@ -7,7 +7,7 @@ conda activate iris
 cd IRIS
 
 # RGB-only (monocular): geometry is metric-by-proportion, not true scale
-python src/pipeline.py --image data/test3.png --output_dir output
+python src/pipeline.py --image data/demoImage.png --output_dir output
 
 # RGB-D (recommended when depth is available): pass the sensor depth for true metric scale
 python src/pipeline.py --image frame.jpg --depth depth.npy --output_dir output
@@ -31,7 +31,7 @@ Image-to-3D is swappable via `--image3d`; the alternatives are documented in
 
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `--image` | `data/test3.png` | input RGB image (single-frame, IRIS's main mode) |
+| `--image` | `data/demoImage.png` | input RGB image (single-frame, IRIS's main mode) |
 | `--depth` | – | **RGB-D mode**: dense metric depth map (`.npy`, aligned to `--image`). Used directly for peel ordering (**skips DepthAnythingV2**) **and** for true metric scale. See [Input modes](#input-modes-rgb-vs-rgb-d). |
 | `--scene_dir` | – | folder of images (multi-view); overrides `--image` |
 | `--output_dir` | `output` | where artifacts are written |
@@ -76,11 +76,11 @@ On an unstable machine, split the run so each stage is short and resumable:
 
 ```bash
 # Stage 1 — peel (saves views + object crops), then stop
-python src/pipeline.py --image data/test3.png --stop_after_peeling \
+python src/pipeline.py --image data/demoImage.png --stop_after_peeling \
        --output_dir output --resume
 
 # Stage 2 — image-to-3D → VGGT → fusion → labeling → mesh
-python src/pipeline.py --image data/test3.png --output_dir output --image3d amodal3r --resume
+python src/pipeline.py --image data/demoImage.png --output_dir output --image3d amodal3r --resume
 ```
 
 `--resume` reuses any completed phase and continues per-object peeling from the

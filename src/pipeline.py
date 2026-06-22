@@ -49,7 +49,7 @@ import config
 # CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
 parser = argparse.ArgumentParser(description="IRIS pipeline")
-parser.add_argument("--image", default="data/test3.png", help="input RGB image")
+parser.add_argument("--image", default="data/demoImage.png", help="input RGB image")
 parser.add_argument("--scene_dir", default=None,
                     help="folder of images (multi-view); overrides --image")
 parser.add_argument("--sparse_depth", default=None,
