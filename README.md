@@ -62,7 +62,7 @@ See [docs/architecture.md](docs/architecture.md) for the full technical breakdow
 
 ## Final Presentation
 
-_TODO: add public Google Drive link to the final presentation (PDF/slides)._
+https://drive.google.com/file/d/1vpBTIzCI2Eq2-U6w5Mjm7JIGumC00Jqr/view?usp=sharing
 
 ## Full Submission Demo Video
 
