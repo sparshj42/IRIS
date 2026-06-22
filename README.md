@@ -66,7 +66,7 @@ _TODO: add public Google Drive link to the final presentation (PDF/slides)._
 
 ## Full Submission Demo Video
 
-_TODO: add YouTube link (public/unlisted)._
+https://youtu.be/wY5HgBuFqpU
 
 ## Setup & Result Reproducibility Video
 
