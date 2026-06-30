@@ -68,10 +68,6 @@ https://drive.google.com/file/d/1vpBTIzCI2Eq2-U6w5Mjm7JIGumC00Jqr/view?usp=shari
 
 https://youtu.be/wY5HgBuFqpU
 
-## Setup & Result Reproducibility Video
-
-_TODO: add YouTube link (public/unlisted)._
-
 ---
 
 ## Attribution
